@@ -13,12 +13,18 @@ export function NewTargetButton({ organizationId }: { organizationId: string }) 
   const [reductionS2, setReductionS2] = useState('')
   const [reductionS3, setReductionS3] = useState('')
   const [curveType, setCurveType] = useState('linear')
+  const [leversText, setLeversText] = useState('')
   const [loading, setLoading] = useState(false)
   const router = useRouter()
   const supabase = createClient()
 
   async function handleCreate() {
     setLoading(true)
+    const levers: Record<string, unknown> = {}
+    for (const part of leversText.split(',')) {
+      const k = part.trim()
+      if (k) levers[k] = true
+    }
     await supabase.from('decarb_targets').insert({
       organization_id: organizationId,
       framework,
@@ -27,6 +33,7 @@ export function NewTargetButton({ organizationId }: { organizationId: string }) 
       reduction_s2: reductionS2 ? Number(reductionS2) : null,
       reduction_s3: reductionS3 ? Number(reductionS3) : null,
       curve_type: curveType,
+      levers,
     })
     setOpen(false)
     setLoading(false)
@@ -114,6 +121,16 @@ export function NewTargetButton({ organizationId }: { organizationId: string }) 
                   <option value="exponential">Exponencial</option>
                   <option value="stepped">Escalonada</option>
                 </select>
+              </div>
+              <div className="col-span-2">
+                <label className="block text-xs text-zinc-400 mb-1">Palancas (separadas por coma)</label>
+                <input
+                  type="text"
+                  value={leversText}
+                  onChange={(e) => setLeversText(e.target.value)}
+                  placeholder="Eficiencia energética, renovables, electrificación…"
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+                />
               </div>
             </div>
 

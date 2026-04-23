@@ -1,7 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { Header } from '@/components/ui/header'
 import { EmptyState } from '@/components/ui/empty-state'
-import { Badge } from '@/components/ui/badge'
 import { Target } from 'lucide-react'
 import { NewTargetButton } from './new-target-button'
 import { TargetCard } from './target-card'

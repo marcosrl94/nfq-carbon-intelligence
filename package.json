@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:drop-auth-trigger": "node --env-file=.env.local scripts/drop-auth-trigger.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",
@@ -19,6 +20,7 @@
     "resend": "^6.11.0"
   },
   "devDependencies": {
+    "pg": "^8.14.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

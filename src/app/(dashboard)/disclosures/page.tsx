@@ -1,7 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { Header } from '@/components/ui/header'
 import { EmptyState } from '@/components/ui/empty-state'
-import { Badge } from '@/components/ui/badge'
 import { FileText } from 'lucide-react'
 import { DisclosureManager } from './disclosure-manager'
 

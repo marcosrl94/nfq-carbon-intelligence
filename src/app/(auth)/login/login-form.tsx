@@ -2,32 +2,36 @@
 
 import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 
-export default function SignupPage() {
+const demoErrors: Record<string, string> = {
+  auth: 'No se pudo completar el inicio de sesión. Vuelve a intentarlo.',
+  demo_unconfigured:
+    'Cuenta demo no configurada (DEMO_USER_EMAIL y DEMO_USER_PASSWORD en el servidor).',
+  demo_signin:
+    'No se pudo entrar con la demo. Revisa el usuario en Supabase Auth y la contraseña en .env.',
+}
+
+export function LoginForm() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [fullName, setFullName] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState(false)
   const [loading, setLoading] = useState(false)
-  const supabase = createClient()
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const supabase = createClient()
+
+  const errParam = searchParams.get('error')
+  const urlError = errParam ? (demoErrors[errParam] ?? null) : null
+  const displayError = error ?? urlError
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
     setError(null)
 
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { full_name: fullName },
-        emailRedirectTo: `${window.location.origin}/callback`,
-      },
-    })
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
 
     if (error) {
       setError(error.message)
@@ -35,36 +39,8 @@ export default function SignupPage() {
       return
     }
 
-    // Si "Confirmar email" está desactivado en Supabase, la sesión viene al instante
-    if (data.session) {
-      router.push('/')
-      router.refresh()
-      return
-    }
-
-    setSuccess(true)
-    setLoading(false)
-  }
-
-  if (success) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-zinc-950 px-4">
-        <div className="w-full max-w-sm text-center space-y-4">
-          <div className="h-12 w-12 rounded-full bg-emerald-600/20 flex items-center justify-center mx-auto">
-            <svg className="h-6 w-6 text-emerald-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75" />
-            </svg>
-          </div>
-          <h2 className="text-lg font-semibold text-white">Revisa tu email</h2>
-          <p className="text-sm text-zinc-400">
-            Hemos enviado un enlace de confirmación a <strong className="text-zinc-300">{email}</strong>
-          </p>
-          <Link href="/login" className="text-sm text-emerald-400 hover:text-emerald-300">
-            Volver al login
-          </Link>
-        </div>
-      </div>
-    )
+    router.push('/')
+    router.refresh()
   }
 
   return (
@@ -77,30 +53,15 @@ export default function SignupPage() {
             </div>
             <h1 className="text-xl font-semibold text-white">Carbon Intelligence</h1>
           </div>
-          <p className="text-zinc-400 text-sm">Crea tu cuenta</p>
+          <p className="text-zinc-400 text-sm">Inicia sesión en tu cuenta</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
+          {displayError && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-sm text-red-400">
-              {error}
+              {displayError}
             </div>
           )}
-
-          <div>
-            <label htmlFor="fullName" className="block text-sm font-medium text-zinc-300 mb-1.5">
-              Nombre completo
-            </label>
-            <input
-              id="fullName"
-              type="text"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              required
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-white placeholder-zinc-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              placeholder="María García"
-            />
-          </div>
 
           <div>
             <label htmlFor="email" className="block text-sm font-medium text-zinc-300 mb-1.5">
@@ -127,9 +88,8 @@ export default function SignupPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={6}
               className="w-full rounded-lg border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-white placeholder-zinc-500 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              placeholder="Mínimo 6 caracteres"
+              placeholder="••••••••"
             />
           </div>
 
@@ -138,16 +98,25 @@ export default function SignupPage() {
             disabled={loading}
             className="w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 transition-colors"
           >
-            {loading ? 'Creando cuenta...' : 'Crear cuenta'}
+            {loading ? 'Entrando...' : 'Iniciar sesión'}
           </button>
         </form>
 
         <p className="text-center text-sm text-zinc-400">
-          ¿Ya tienes cuenta?{' '}
-          <Link href="/login" className="text-emerald-400 hover:text-emerald-300">
-            Inicia sesión
+          ¿No tienes cuenta?{' '}
+          <Link href="/signup" className="text-emerald-400 hover:text-emerald-300">
+            Regístrate
           </Link>
         </p>
+
+        <form action="/api/auth/demo" method="post" className="pt-2">
+          <button
+            type="submit"
+            className="w-full rounded-lg border border-zinc-600 bg-zinc-800/50 px-4 py-2.5 text-sm font-medium text-zinc-200 hover:bg-zinc-800 transition-colors"
+          >
+            Entrar con cuenta demo
+          </button>
+        </form>
       </div>
     </div>
   )

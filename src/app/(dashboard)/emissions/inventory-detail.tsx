@@ -54,14 +54,24 @@ export function InventoryDetail({ inventory, entries }: Props) {
 
   async function handleAdd() {
     setLoading(true)
+    const q = quantity ? Number(quantity) : null
+    const ef = efValue ? Number(efValue) : null
+    const manualT = tco2e ? Number(tco2e) : null
+    const tco2eFinal =
+      manualT != null && !Number.isNaN(manualT)
+        ? manualT
+        : q != null && ef != null && !Number.isNaN(q) && !Number.isNaN(ef)
+          ? q * ef
+          : null
     await supabase.from('emission_entries').insert({
       inventory_id: inventory.id,
       scope,
       category: category || null,
-      quantity: quantity ? Number(quantity) : null,
+      quantity: q,
       unit: unit || null,
-      ef_value: efValue ? Number(efValue) : null,
-      tco2e: tco2e ? Number(tco2e) : null,
+      ef_value: ef,
+      ef_source: inventory.ef_source || null,
+      tco2e: tco2eFinal,
     })
     setAdding(false)
     setScope('s1')
@@ -249,10 +259,13 @@ export function InventoryDetail({ inventory, entries }: Props) {
                   value={tco2e}
                   onChange={(e) => setTco2e(e.target.value)}
                   className="w-full rounded-lg border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
-                  placeholder="Total"
+                  placeholder="Total (opcional: cantidad × FE)"
                 />
               </div>
             </div>
+            <p className="text-[11px] text-zinc-500">
+              Si dejas tCO₂e vacío y rellenas cantidad y factor, se calcula como cantidad × FE (misma unidad de referencia del FE).
+            </p>
 
             <div className="flex justify-end gap-3 pt-2">
               <button

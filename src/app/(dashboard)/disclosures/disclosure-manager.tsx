@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { Badge } from '@/components/ui/badge'
-import { Plus, Trash2, FileText, CheckCircle, Clock } from 'lucide-react'
+import { Plus, Trash2, FileText, CheckCircle, Clock, Pencil } from 'lucide-react'
 import type { RegulatoryDisclosure, DisclosureFramework } from '@/types/database'
 
 const tcfdDisclosures = [
@@ -57,6 +57,9 @@ export function DisclosureManager({ inventories, disclosures }: Props) {
   const [disclosureId, setDisclosureId] = useState('')
   const [content, setContent] = useState('')
   const [loading, setLoading] = useState(false)
+  const [editing, setEditing] = useState<RegulatoryDisclosure | null>(null)
+  const [editContent, setEditContent] = useState('')
+  const [savingEdit, setSavingEdit] = useState(false)
   const router = useRouter()
   const supabase = createClient()
 
@@ -86,6 +89,27 @@ export function DisclosureManager({ inventories, disclosures }: Props) {
   async function handleStatusToggle(disclosure: RegulatoryDisclosure) {
     const next = disclosure.status === 'completed' ? 'pending' : 'completed'
     await supabase.from('regulatory_disclosures').update({ status: next }).eq('id', disclosure.id)
+    router.refresh()
+  }
+
+  function openEdit(d: RegulatoryDisclosure) {
+    setEditing(d)
+    setEditContent(d.content ?? '')
+  }
+
+  async function handleSaveEdit() {
+    if (!editing) return
+    setSavingEdit(true)
+    const hasText = editContent.trim().length > 0
+    await supabase
+      .from('regulatory_disclosures')
+      .update({
+        content: hasText ? editContent : null,
+        status: hasText ? 'completed' : 'pending',
+      })
+      .eq('id', editing.id)
+    setSavingEdit(false)
+    setEditing(null)
     router.refresh()
   }
 
@@ -144,6 +168,14 @@ export function DisclosureManager({ inventories, disclosures }: Props) {
                     </div>
                   </div>
                   <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => openEdit(d)}
+                      className="text-zinc-500 hover:text-emerald-400 transition-colors"
+                      aria-label="Editar disclosure"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
                     <Badge variant={statusVariant[d.status]}>{statusLabel[d.status] ?? d.status}</Badge>
                     <button onClick={() => handleDelete(d.id)} className="text-zinc-600 hover:text-red-400 transition-colors">
                       <Trash2 className="h-3.5 w-3.5" />
@@ -155,6 +187,43 @@ export function DisclosureManager({ inventories, disclosures }: Props) {
           )}
         </div>
       ))}
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 p-6 space-y-4">
+            <h3 className="text-sm font-semibold text-white">
+              Editar — {editing.framework} {editing.disclosure_id}
+            </h3>
+            <div>
+              <label className="block text-xs text-zinc-400 mb-1">Contenido</label>
+              <textarea
+                value={editContent}
+                onChange={(e) => setEditContent(e.target.value)}
+                rows={8}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none resize-none"
+                placeholder="Texto de la divulgación…"
+              />
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditing(null)}
+                className="rounded-lg px-3.5 py-2 text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEdit}
+                disabled={savingEdit}
+                className="rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50 transition-colors"
+              >
+                {savingEdit ? 'Guardando…' : 'Guardar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {adding && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
