@@ -5,6 +5,8 @@ import { createClient as createServiceClient } from '@supabase/supabase-js'
  * Crea org + fila de perfil al primer acceso, alineada con
  * `settings/organization-form` (el trigger SQL podía chocar con el esquema real).
  * Usa el service role para no depender de políticas RLS en el primer alta.
+ *
+ * Mismas columnas mínimas que `20250422120000_onboarding_and_demo.sql` (handle_new_user).
  */
 export async function ensureUserProfile(): Promise<void> {
   const supabase = await createClient()
@@ -33,12 +35,15 @@ export async function ensureUserProfile(): Promise<void> {
     auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
   })
 
+  const fiscalYear = new Date().getFullYear()
   const { data: org, error: orgError } = await admin
     .from('organizations')
     .insert({
       name: 'Mi organización',
       sectors: [],
       geographies: [],
+      consolidation: 'operational',
+      fiscal_year: fiscalYear,
       employees: null,
       revenue_eur_m: null,
     })
