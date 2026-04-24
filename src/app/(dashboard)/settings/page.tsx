@@ -2,15 +2,22 @@ import { createClient } from '@/lib/supabase/server'
 import { Header } from '@/components/ui/header'
 import { OrganizationForm } from './organization-form'
 import { InvitationManager } from './invitation-manager'
+import { ProfileForm } from './profile-form'
 
 export default async function SettingsPage() {
   const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user?.id ?? '').single()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', user?.id ?? '')
+    .maybeSingle()
   const orgId = profile?.organization_id
 
   const { data: organization } = orgId
-    ? await supabase.from('organizations').select('*').eq('id', orgId).single()
+    ? await supabase.from('organizations').select('*').eq('id', orgId).maybeSingle()
     : { data: null }
 
   const { data: members } = orgId
@@ -26,6 +33,8 @@ export default async function SettingsPage() {
       <Header title="Configuración" description="Gestión de organización, equipo e integraciones" profile={profile} />
 
       <div className="p-8 space-y-8 max-w-3xl">
+        <ProfileForm profile={profile} authEmail={user?.email ?? null} />
+
         {/* Organization */}
         <OrganizationForm organization={organization} profile={profile} />
 

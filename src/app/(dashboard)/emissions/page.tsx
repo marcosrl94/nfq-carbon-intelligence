@@ -5,6 +5,7 @@ import { EmptyState } from '@/components/ui/empty-state'
 import { Factory } from 'lucide-react'
 import { NewInventoryButton } from './new-inventory-button'
 import { InventoryDetail } from './inventory-detail'
+import { listEmissionFactors } from '@/lib/emissions/factors'
 import type { InventoryStatus } from '@/types/database'
 
 const statusBadge: Record<InventoryStatus, { label: string; variant: 'success' | 'warning' | 'default' }> = {
@@ -16,7 +17,11 @@ const statusBadge: Record<InventoryStatus, { label: string; variant: 'success' |
 export default async function EmissionsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user?.id ?? '').single()
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', user?.id ?? '')
+    .maybeSingle()
 
   const orgId = profile?.organization_id
 
@@ -25,6 +30,9 @@ export default async function EmissionsPage() {
     .select('*, emission_entries(*)')
     .eq('organization_id', orgId ?? '')
     .order('fiscal_year', { ascending: false })
+
+  // Catálogo de factores compartido por todos los inventarios (read-only vía RLS).
+  const factors = await listEmissionFactors()
 
   return (
     <>
@@ -62,7 +70,7 @@ export default async function EmissionsPage() {
                       <Badge variant={badge.variant}>{badge.label}</Badge>
                     </div>
                   </div>
-                  <InventoryDetail inventory={inv} entries={inv.emission_entries} />
+                  <InventoryDetail inventory={inv} entries={inv.emission_entries} factors={factors} />
                 </div>
               )
             })}

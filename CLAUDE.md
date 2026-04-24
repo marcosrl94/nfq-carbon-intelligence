@@ -49,8 +49,8 @@
 **Patrón de Supabase (App Router + SSR):**
 - `src/lib/supabase/client.ts` — cliente browser
 - `src/lib/supabase/server.ts` — cliente server (Server Components / Route Handlers)
-- `src/lib/supabase/middleware.ts` — refresco de sesión en cada request
-- `src/middleware.ts` — invoca `updateSession`, excluye assets estáticos
+- `src/lib/supabase/update-session.ts` — refresco de sesión en cada request
+- `src/proxy.ts` — invoca `updateSession`, excluye assets estáticos (Next 16: convención *proxy* en lugar de *middleware* en raíz)
 
 **Comandos:**
 ```bash
@@ -89,15 +89,19 @@ npm run db:drop-auth-trigger  # aplica en Postgres el DROP del trigger (requiere
 - **Configuración (`/settings`)** — formulario de organización, listado de equipo, invitaciones (registro en tabla; email Resend aún no cableado)
 - **Dashboard** — KPIs por inventario, tendencia YoY, resumen de objetivos
 - Migración **`20250423140000_rls_and_audit_triggers.sql`** — RLS multi-tenant y triggers que escriben en `audit_log_entries` (inventarios, entradas, targets, disclosures, invitaciones). **Aplicar en el proyecto de Supabase** (CLI o SQL Editor) antes de producción
+- **Catálogo `emission_factors` aplicado en Supabase** (migraciones `20250424150000_emission_factors.sql` + `20250424150100_emission_factors_seed.sql`). 37 factores core (S1 combustibles + refrigerantes, S2 electricidad ES/UK/EU27, S3 travel + residuos + agua). RLS: `select` abierto a autenticados; edición vía SQL / service role. `activity_key` único → seed idempotente (`on conflict do nothing`)
+- **Picker de factores en `/emissions`** (✅ aplicado 2026-04-24). Migración `20250424160000_emission_entries_factor_fk.sql` añade `emission_entries.factor_id uuid references emission_factors(id) on delete set null` + índice parcial. Modal de nueva entrada refactorizado en `src/app/(dashboard)/emissions/inventory-detail.tsx`: pills por scope, buscador por texto, listado agrupado por categoría, preview en vivo con fórmula `quantity × ef_value / 1000` y cita de fuente; el insert persiste `factor_id` (FK viva) + snapshot (`ef_value`, `ef_source`, `unit`, `category`, `subcategory`) para trazabilidad histórica ante cambios del catálogo
 - Integración Resend (dependencia lista; flujo de invitación por email pendiente)
 - Deploy configurado en Vercel
 
 ### Pendiente 🚧 (orden sugerido)
-1. **Catálogo de factores (EF) por unidad/sector** — hoy se elige la fuente del inventario y el FE es manual; valorar tablas o integración (DEFRA/API propia) y unidades con conversión explícita
-2. **Notificaciones e invitaciones** — generar enlace/ token de aceptación y enviar email con Resend; flujo "aceptar invitación"
-3. **Vista de audit log** en UI (solo admin) y retención/backfill si hace falta
-4. **Hardening RLS** — revisar inserción de `profiles`/`organizations` y roles; políticas `FOR ALL` simplifican pero conviene alinear con matriz de roles
-5. **Resiliencia e2e** — pruebas, backups, monitoring
+1. **Panel de breakdown por actividad en el dashboard** — hoy los KPIs agregan por scope; desglosar por `activity_key` / `category` (top N actividades + % del total) usando los `factor_id` que ya llegan en las entradas. Permite story "dónde está el carbono" sin JOIN extra si usamos el snapshot denormalizado
+2. **Export CSV del inventario** con columnas de trazabilidad completa (`activity_key`, `ef_value`, `ef_unit`, `ef_source`, `source_version`, `year`, `region`, `tco2e`) — base de auditoría externa
+3. **Notificaciones e invitaciones** — generar enlace/token de aceptación y enviar email con Resend; flujo "aceptar invitación"
+4. **Vista de audit log** en UI (solo admin) y retención/backfill si hace falta
+5. **Hardening RLS** — matriz de roles completa (`admin`/`analyst`/`client`/`auditor`) sobre `profiles`/`organizations`/inventarios; revisar `FOR ALL` y separar select/insert/update/delete
+6. **Integración DEFRA API + conversión de unidades** — hoy el picker filtra por `scope`; falta validar que `unit` ingresada por el usuario es compatible con `ef_unit` del factor (tabla de conversiones explícita)
+7. **Resiliencia e2e** — pruebas, backups, monitoring
 
 ### Riesgos / decisiones abiertas
 - **Next.js 16 + React 19** — ecosistema joven. Algunas libs pueden no soportarlo todavía. Antes de añadir deps, comprobar compatibilidad.

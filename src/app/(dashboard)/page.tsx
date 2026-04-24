@@ -19,7 +19,7 @@ export default async function DashboardPage() {
     .from('profiles')
     .select('*')
     .eq('id', user?.id ?? '')
-    .single()
+    .maybeSingle()
 
   const orgId = profile?.organization_id
 

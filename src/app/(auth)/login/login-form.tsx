@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
+import { GoogleSignInButton } from '@/components/auth/google-sign-in-button'
 
 const demoErrors: Record<string, string> = {
   auth: 'No se pudo completar el inicio de sesión. Vuelve a intentarlo.',
@@ -101,6 +102,17 @@ export function LoginForm() {
             {loading ? 'Entrando...' : 'Iniciar sesión'}
           </button>
         </form>
+
+        <div className="relative">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-zinc-700" />
+          </div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-zinc-950 px-2 text-zinc-500">o continúa con</span>
+          </div>
+        </div>
+
+        <GoogleSignInButton />
 
         <p className="text-center text-sm text-zinc-400">
           ¿No tienes cuenta?{' '}

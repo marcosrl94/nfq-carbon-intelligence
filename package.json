@@ -2,19 +2,31 @@
   "name": "nfq-carbon-intelligence",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
-    "dev": "next dev",
+    "prebuild": "node scripts/assert-no-legacy-middleware.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:turbo": "node scripts/dev.mjs --turbopack",
+    "doctor": "node scripts/doctor.mjs",
+    "debug": "node scripts/debug-snapshot.mjs",
+    "validate": "node scripts/doctor.mjs && npx tsc --noEmit",
+    "dev:fresh": "npm run clean && npm run dev",
+    "dev:clean": "node scripts/kill-next-ports.mjs && npm run dev",
+    "clean": "node -e \"require('node:fs').rmSync('.next',{recursive:true,force:true})\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "db:drop-auth-trigger": "node --env-file=.env.local scripts/drop-auth-trigger.mjs"
+    "db:drop-auth-trigger": "node --env-file=.env.local scripts/drop-auth-trigger.mjs",
+    "user:create": "node --env-file=.env.local scripts/create-auth-user.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",
     "@supabase/supabase-js": "^2.103.2",
     "clsx": "^2.1.1",
     "lucide-react": "^1.8.0",
-    "next": "16.2.3",
+    "next": "16.2.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "resend": "^6.11.0"
@@ -26,7 +38,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.3",
+    "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

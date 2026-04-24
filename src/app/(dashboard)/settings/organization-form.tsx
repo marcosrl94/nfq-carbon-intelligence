@@ -18,27 +18,58 @@ export function OrganizationForm({ organization, profile }: Props) {
   const [revenue, setRevenue] = useState(organization?.revenue_eur_m?.toString() ?? '')
   const [loading, setLoading] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const router = useRouter()
   const supabase = createClient()
 
   async function handleSave() {
     setLoading(true)
     setSaved(false)
+    setError(null)
 
-    const data = {
+    const base = {
       name,
       sectors: sectors.split(',').map(s => s.trim()).filter(Boolean),
       geographies: geographies.split(',').map(s => s.trim()).filter(Boolean),
       employees: employees ? Number(employees) : null,
       revenue_eur_m: revenue ? Number(revenue) : null,
     }
+    const data = organization
+      ? base
+      : {
+          ...base,
+          consolidation: 'operational' as const,
+          fiscal_year: new Date().getFullYear(),
+        }
 
     if (organization) {
-      await supabase.from('organizations').update(data).eq('id', organization.id)
+      const { error: uerr } = await supabase.from('organizations').update(data).eq('id', organization.id)
+      if (uerr) {
+        setError(
+          uerr.message +
+            (uerr.hint ? ` — ${uerr.hint}` : '') +
+            ' (revisa RLS: debes ser miembro de la org; columna `consolidation` requerida, etc.)'
+        )
+        setLoading(false)
+        return
+      }
     } else {
-      const { data: newOrg } = await supabase.from('organizations').insert(data).select().single()
+      const { data: newOrg, error: oerr } = await supabase.from('organizations').insert(data).select().single()
+      if (oerr) {
+        setError(oerr.message)
+        setLoading(false)
+        return
+      }
       if (newOrg && profile) {
-        await supabase.from('profiles').update({ organization_id: newOrg.id }).eq('id', profile.id)
+        const { error: perr } = await supabase
+          .from('profiles')
+          .update({ organization_id: newOrg.id })
+          .eq('id', profile.id)
+        if (perr) {
+          setError('Organización creada, pero no se pudo enlazar el perfil: ' + perr.message)
+          setLoading(false)
+          return
+        }
       }
     }
 
@@ -106,6 +137,12 @@ export function OrganizationForm({ organization, profile }: Props) {
             />
           </div>
         </div>
+
+        {error && (
+          <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+            {error}
+          </div>
+        )}
 
         <div className="flex items-center gap-3 pt-2">
           <button

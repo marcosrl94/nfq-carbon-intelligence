@@ -8,7 +8,11 @@ import { TargetCard } from './target-card'
 export default async function TargetsPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  const { data: profile } = await supabase.from('profiles').select('*').eq('id', user?.id ?? '').single()
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', user?.id ?? '')
+    .maybeSingle()
   const orgId = profile?.organization_id
 
   const { data: targets } = await supabase

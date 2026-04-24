@@ -4,6 +4,30 @@ import { useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { GoogleSignInButton } from '@/components/auth/google-sign-in-button'
+
+/**
+ * "Database error finding user" (y similares) es un mensaje genérico de Supabase: a veces es un
+ * trigger en auth.users, otras veces otra consulta/RLS. No implica siempre `handle_new_user`.
+ */
+function mapSignupError(message: string): string {
+  if (
+    /database error (finding|checking) (user|email)/i.test(message) ||
+    /database error saving/i.test(message)
+  ) {
+    return [
+      'El registro no pudo completarse: Postgres devolvió un error y Auth muestra un mensaje genérico; no siempre es el mismo fallo.',
+      '',
+      '1) Si aún no lo hiciste: en Supabase → SQL → New query, ejecuta el SQL de `supabase/migrations/20250422130000_drop_handle_new_user_trigger.sql` (quita el trigger/función handle_new_user). O en la raíz: `npm run db:drop-auth-trigger` (con .env.local y conexión a la base).',
+      '',
+      '2) Si ya lo aplicaste y sigue igual: revisa Supabase → Logs → Postgres, y comprobaciones en Auth (email duplicado, registro deshabilitado, plantillas de email). Puede ser RLS, otro trigger o una política distinta a handle_new_user.',
+    ].join('\n')
+  }
+  if (/user already registered|already been registered|already exists/i.test(message)) {
+    return 'Ese email ya está registrado. Prueba a iniciar sesión o a recuperar la contraseña en Supabase Auth.'
+  }
+  return message
+}
 
 export default function SignupPage() {
   const [email, setEmail] = useState('')
@@ -30,13 +54,20 @@ export default function SignupPage() {
     })
 
     if (error) {
-      setError(error.message)
+      setError(mapSignupError(error.message))
+      setLoading(false)
+      return
+    }
+
+    if (!data.user) {
+      setError('Registro sin usuario en la respuesta. Revisa la consola o la configuración de Supabase (signup habilitado, proveedor email).')
       setLoading(false)
       return
     }
 
     // Si "Confirmar email" está desactivado en Supabase, la sesión viene al instante
     if (data.session) {
+      setLoading(false)
       router.push('/')
       router.refresh()
       return
@@ -82,7 +113,10 @@ export default function SignupPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-sm text-red-400">
+            <div
+              className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-sm text-red-400 whitespace-pre-line text-left"
+              role="alert"
+            >
               {error}
             </div>
           )}
@@ -141,6 +175,17 @@ export default function SignupPage() {
             {loading ? 'Creando cuenta...' : 'Crear cuenta'}
           </button>
         </form>
+
+        <div className="relative">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-zinc-700" />
+          </div>
+          <div className="relative flex justify-center text-xs uppercase">
+            <span className="bg-zinc-950 px-2 text-zinc-500">o regístrate con</span>
+          </div>
+        </div>
+
+        <GoogleSignInButton label="Registrarse con Google" />
 
         <p className="text-center text-sm text-zinc-400">
           ¿Ya tienes cuenta?{' '}
