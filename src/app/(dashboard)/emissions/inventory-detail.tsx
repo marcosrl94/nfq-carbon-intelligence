@@ -108,6 +108,41 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
     [factors, selectedFactorId]
   )
 
+  // ── Equivalencia scope2_method ↔ factor *_market_residual ──────────────
+  // Convención: el factor "market-based residual" del catálogo tiene la
+  // misma activity_key + suffix '_market_residual'. Si el analista marca
+  // market_based con un factor location, intentamos el swap automático.
+  // Recíproco al volver a location_based.
+  const isResidualFactor =
+    selectedFactor?.activity_key.endsWith('_market_residual') ?? false
+
+  const marketResidualPair = useMemo(() => {
+    if (!selectedFactor || selectedFactor.scope !== 's2') return null
+    const targetKey = isResidualFactor
+      ? null // ya estamos en residual
+      : `${selectedFactor.activity_key}_market_residual`
+    if (!targetKey) return null
+    return factors.find((f) => f.activity_key === targetKey) ?? null
+  }, [factors, selectedFactor, isResidualFactor])
+
+  const locationPair = useMemo(() => {
+    if (!selectedFactor || !isResidualFactor) return null
+    const targetKey = selectedFactor.activity_key.replace(/_market_residual$/, '')
+    return factors.find((f) => f.activity_key === targetKey) ?? null
+  }, [factors, selectedFactor, isResidualFactor])
+
+  // Sincroniza scope2Method ↔ factor activo. Una sola dirección por render
+  // gracias a las guardas (la condición que dispara el setSelectedFactorId
+  // deja de cumplirse en el siguiente render porque cambian los pares).
+  useEffect(() => {
+    if (!selectedFactor || selectedFactor.scope !== 's2') return
+    if (scope2Method === 'market_based' && !isResidualFactor && marketResidualPair) {
+      setSelectedFactorId(marketResidualPair.id)
+    } else if (scope2Method === 'location_based' && isResidualFactor && locationPair) {
+      setSelectedFactorId(locationPair.id)
+    }
+  }, [scope2Method, isResidualFactor, marketResidualPair, locationPair, selectedFactor])
+
   // Reset de la unidad de entrada cuando cambia el factor.
   useEffect(() => {
     setInputUnit(selectedFactor?.ef_unit ?? null)
@@ -124,6 +159,9 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
     const q = search.trim().toLowerCase()
     return factors.filter((f) => {
       if (f.scope !== scope) return false
+      // Los factores market_residual se acceden vía auto-swap del método Scope 2,
+      // no directamente desde el picker (evita confusión y elecciones inconsistentes).
+      if (f.scope === 's2' && f.activity_key.endsWith('_market_residual')) return false
       if (!q) return true
       const hay = [f.activity_label, f.category, f.subcategory, f.source, f.region]
         .filter(Boolean)
@@ -501,6 +539,29 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
                   <p className="text-[10px] text-amber-300/90 leading-snug">
                     Recuerda declarar tus instrumentos contractuales en{' '}
                     <span className="underline">Configuración → Energía renovable</span>.
+                  </p>
+                )}
+                {/* Estado del swap automático factor location ↔ residual */}
+                {selectedFactor && scope2Method === 'market_based' && (
+                  isResidualFactor ? (
+                    <p className="text-[10px] text-emerald-300/90 leading-snug">
+                      ✓ Factor activo: <span className="font-mono">{selectedFactor.activity_key}</span>{' '}
+                      (residual mix). Si tu consumo está cubierto por GoOs/RECs/PPAs retirados,
+                      ese instrumento prevalece sobre el residual.
+                    </p>
+                  ) : !marketResidualPair ? (
+                    <p className="text-[10px] text-amber-400 leading-snug">
+                      ⚠ No hay factor <span className="font-mono">{selectedFactor.activity_key}_market_residual</span>{' '}
+                      en el catálogo. El cálculo usa el factor location-based como aproximación —
+                      anota la limitación en notas y prioriza añadir el residual al catálogo antes
+                      del reporting auditado.
+                    </p>
+                  ) : null
+                )}
+                {selectedFactor && scope2Method === 'location_based' && isResidualFactor && !locationPair && (
+                  <p className="text-[10px] text-amber-400 leading-snug">
+                    ⚠ Factor residual activo pero el método es location-based. Sin equivalente
+                    location en el catálogo no podemos hacer el swap automático.
                   </p>
                 )}
               </div>
