@@ -311,6 +311,12 @@ export interface EmissionFactor {
   citation_url: string | null
   notes: string | null
   is_active: boolean
+  /**
+   * Categoría GHG Protocol Scope 3 (1-15). Sólo aplica cuando scope='s3'.
+   * Migración: 20250425210000_emission_factors_s3_category.sql
+   * Permite hotspot detection granular en /materiality.
+   */
+  s3_category: number | null
   created_at: string
   updated_at: string
 }

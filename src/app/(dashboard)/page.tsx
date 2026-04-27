@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { detectHotspots } from '@/lib/materiality/resolve'
 import { Header } from '@/components/ui/header'
 import { StatCard } from '@/components/ui/stat-card'
 import { Badge } from '@/components/ui/badge'
@@ -155,10 +156,10 @@ export default async function DashboardPage() {
 
   const orgId = profile?.organization_id
 
-  // Fetch inventories with emissions
+  // Fetch inventories with emissions (incluyendo factor.s3_category para hotspots granulares)
   const { data: inventories } = await supabase
     .from('ghg_inventories')
-    .select('*, emission_entries(*)')
+    .select('*, emission_entries(*, emission_factors(s3_category))')
     .eq('organization_id', orgId ?? '')
     .order('fiscal_year', { ascending: false })
 
@@ -242,39 +243,18 @@ export default async function DashboardPage() {
   const exceedsThreshold = vsBasePct != null && Math.abs(vsBasePct) >= Number(organization?.recalc_threshold_pct ?? 5)
   const baseYearLocked = organization?.base_year_locked_at != null
 
-  // Hotspots de materialidad sin cubrir (count para banner; detalle vive en /materiality)
-  const matHotspotsCount = (() => {
-    if (!matCatalog || orgSectorList.length === 0) return 0
-    const hasS1 = entries.some((e: { scope: string; tco2e: number | null }) => e.scope === 's1' && (e.tco2e ?? 0) > 0)
-    const hasS2 = entries.some((e: { scope: string; tco2e: number | null }) => e.scope === 's2' && (e.tco2e ?? 0) > 0)
-    const hasS3 = entries.some((e: { scope: string; tco2e: number | null }) => e.scope === 's3' && (e.tco2e ?? 0) > 0)
-    const SCOPES_KEY = ['s1', 's2', 's3.cat1', 's3.cat3', 's3.cat4', 's3.cat5', 's3.cat6', 's3.cat7', 's3.cat11', 's3.cat15']
-    let count = 0
-    for (const sector of orgSectorList) {
-      for (const sc of SCOPES_KEY) {
-        // override?
-        const override = (matOverrides ?? []).find((o: { sector_code: string; scope_category: string }) => o.sector_code === sector && o.scope_category === sc)
-        let level = 0
-        if (override) {
-          level = (override as { materiality: number }).materiality
-        } else {
-          // exacta
-          const exact = matCatalog.find((m: { sector_code: string; scope_category: string }) => m.sector_code === sector && m.scope_category === sc)
-          if (exact) {
-            level = (exact as { materiality: number }).materiality
-          } else if (sector.includes('.')) {
-            // padre
-            const parent = matCatalog.find((m: { sector_code: string; scope_category: string }) => m.sector_code === sector.split('.')[0] && m.scope_category === sc)
-            if (parent) level = (parent as { materiality: number }).materiality
-          }
-        }
-        if (level < 2) continue
-        const has = sc === 's1' ? hasS1 : sc === 's2' ? hasS2 : hasS3
-        if (!has) count += 1
-      }
-    }
-    return count
-  })()
+  // Hotspots de materialidad sin cubrir (count para banner). El detalle vive en
+  // /materiality. Mismo helper compartido para no divergir lógicas.
+  const matHotspots =
+    matCatalog && orgSectorList.length > 0
+      ? detectHotspots(
+          orgSectorList,
+          entries as Parameters<typeof detectHotspots>[1],
+          matCatalog as Parameters<typeof detectHotspots>[2],
+          (matOverrides ?? []) as Parameters<typeof detectHotspots>[3]
+        )
+      : []
+  const matHotspotsCount = matHotspots.length
 
   // Removals/offsets — SEPARADO del total. Filtramos al año del inventario actual.
   const latestYear = latestInventory?.fiscal_year

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { AlertTriangle, Edit3, Save, X, Loader2, Check } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import {
+  detectHotspots,
   resolveMateriality,
   SCOPE_CATEGORIES_ORDER,
   SCOPE_CATEGORY_LABELS,
@@ -24,7 +25,12 @@ interface Props {
   sectors: NaceSector[]
   catalog: IndustryMateriality[]
   overrides: OrgMaterialityOverride[]
-  latestInventoryEntries: { scope: string | null; category: string | null; tco2e: number | null }[]
+  latestInventoryEntries: {
+    scope: string | null
+    category: string | null
+    tco2e: number | null
+    emission_factors?: { s3_category: number | null }[] | null
+  }[]
   latestInventoryYear: number | null
   isAdmin: boolean
 }
@@ -74,41 +80,12 @@ export function MaterialityManager({
     [sectors]
   )
 
-  // Detectar entries por scope para cruce de hotspots
-  const hasS1 = latestInventoryEntries.some((e) => e.scope === 's1' && (e.tco2e ?? 0) > 0)
-  const hasS2 = latestInventoryEntries.some((e) => e.scope === 's2' && (e.tco2e ?? 0) > 0)
-  const hasS3 = latestInventoryEntries.some((e) => e.scope === 's3' && (e.tco2e ?? 0) > 0)
-
-  /**
-   * Una categoría tiene "datos" si:
-   *   · s1: alguna entry s1 con tco2e>0
-   *   · s2: alguna entry s2 con tco2e>0
-   *   · s3.catX: tenemos hasS3 (no podemos diferenciar por categoría hasta v1.3)
-   */
-  function hasData(scopeCategory: ScopeCategory): boolean {
-    if (scopeCategory === 's1') return hasS1
-    if (scopeCategory === 's2') return hasS2
-    return hasS3 // todas las s3.catX se evalúan agregadas por ahora
-  }
-
-  // Hotspots material (≥2) sin datos
-  const hotspots = useMemo(() => {
-    const out: Array<{ sectorCode: string; scopeCategory: ScopeCategory; level: MaterialityLevel; uncertain: boolean }> = []
-    for (const sectorCode of orgSectors) {
-      for (const sc of SCOPE_CATEGORIES_ORDER) {
-        const r = resolveMateriality(sectorCode, sc, catalog, overrides)
-        if (r.level >= 2 && !hasData(sc)) {
-          out.push({
-            sectorCode,
-            scopeCategory: sc,
-            level: r.level,
-            uncertain: sc.startsWith('s3.cat'), // no podemos diferenciar S3 por categoría
-          })
-        }
-      }
-    }
-    return out
-  }, [orgSectors, catalog, overrides, hasS1, hasS2, hasS3])
+  // Hotspots material (≥2) sin datos — usa el helper compartido con dashboard.
+  // S3 evaluadas a nivel de categoría 1-15 vía emission_factors.s3_category.
+  const hotspots = useMemo(
+    () => detectHotspots(orgSectors, latestInventoryEntries, catalog, overrides),
+    [orgSectors, latestInventoryEntries, catalog, overrides]
+  )
 
   async function handleSaveSectors() {
     setFeedback(null)
@@ -267,7 +244,10 @@ export function MaterialityManager({
           <p className="text-[11px] text-zinc-300 leading-relaxed mb-3">
             Categorías marcadas como <strong>material</strong> o <strong>alta materialidad</strong>{' '}
             en tu sector que aún no tienen entradas en el inventario {latestInventoryYear ?? 'actual'}.
-            Las categorías S3 se evalúan de forma agregada (sin desglose por categoría 1–15) en v1.2.
+            Las S3 se evalúan a nivel de categoría 1–15 cruzando{' '}
+            <code className="text-zinc-400">emission_factors.s3_category</code>. Si una entry S3 no
+            tiene esa columna mapeada todavía, marcamos la cobertura como{' '}
+            <em>incierta</em> (warning textual al lado de cada hotspot).
           </p>
           <div className="space-y-1.5">
             {hotspots.map((h, i) => (
@@ -281,7 +261,7 @@ export function MaterialityManager({
                 <Badge variant="default">{h.sectorCode}</Badge>
                 <span>{SCOPE_CATEGORY_LABELS[h.scopeCategory]}</span>
                 {h.uncertain && (
-                  <span className="text-[10px] text-zinc-500 italic">(no podemos verificar S3 a nivel cat 1–15)</span>
+                  <span className="text-[10px] text-amber-400 italic">cobertura incierta · alguna entry S3 sin s3_category mapeado</span>
                 )}
               </div>
             ))}

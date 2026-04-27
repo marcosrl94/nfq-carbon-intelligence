@@ -34,11 +34,11 @@ export default async function MaterialityPage() {
       : Promise.resolve({ data: [] as OrgMaterialityOverride[] }),
   ])
 
-  // Entries del último inventario (para detectar gaps)
+  // Entries del último inventario (con embed factor.s3_category para hotspot granular)
   const { data: inventories } = orgId
     ? await supabase
         .from('ghg_inventories')
-        .select('id, fiscal_year, emission_entries(scope, category, tco2e)')
+        .select('id, fiscal_year, emission_entries(scope, category, tco2e, emission_factors(s3_category))')
         .eq('organization_id', orgId)
         .order('fiscal_year', { ascending: false })
         .limit(1)
@@ -77,7 +77,14 @@ export default async function MaterialityPage() {
             catalog={(catalog ?? []) as IndustryMateriality[]}
             overrides={(overrides ?? []) as OrgMaterialityOverride[]}
             latestInventoryEntries={
-              (latestInventory?.emission_entries ?? []) as { scope: string | null; category: string | null; tco2e: number | null }[]
+              // Supabase devuelve emission_factors como array; el helper detectHotspots
+              // acepta ambos formatos.
+              (latestInventory?.emission_entries ?? []) as {
+                scope: string | null
+                category: string | null
+                tco2e: number | null
+                emission_factors?: { s3_category: number | null }[] | null
+              }[]
             }
             latestInventoryYear={latestInventory?.fiscal_year ?? null}
             isAdmin={profile?.role === 'admin'}

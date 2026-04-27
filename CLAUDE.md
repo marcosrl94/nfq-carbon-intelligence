@@ -226,7 +226,7 @@ npm run db:drop-auth-trigger  # aplica en Postgres el DROP del trigger (requiere
 
 ### Fuera de v1.2 (siguientes versiones)
 
-- **PCAF / financed emissions (cat 15)** → v1.3 o v2.
+- **PCAF / financed emissions (cat 15)** → ⛔ **deprioritized** (decisión user 2026-04-27). Aunque la matriz de materialidad lo marca como hotspot 3 para banca/seguros (K.64, K.65), no construimos motor PCAF en v1.3 ni en v2 inmediato. Si llega cliente sector financiero, reabrir.
 - **Scope 3 cat 11 (use of sold products) granular** → v2.
 - **Consolidación multi-entity real** → v2.
 - **XBRL tagging** → v2.

@@ -91,6 +91,99 @@ export function resolveMateriality(
   return { level: 0, source: 'inherit', notes: null, resolved_from: sectorCode }
 }
 
+/**
+ * Entry mínimo necesario para hotspot detection.
+ * Lo cargamos vía embed `emission_factors(s3_category)` en el server query.
+ *
+ * Supabase devuelve el embed como array por defecto (incluso para FK 1:1)
+ * salvo que se anote como single. Aceptamos ambos formatos.
+ */
+type EmissionFactorEmbed = { s3_category: number | null }
+export interface HotspotEntry {
+  scope: string | null
+  tco2e: number | null
+  emission_factors?: EmissionFactorEmbed | EmissionFactorEmbed[] | null
+  /** Snapshot directo si ya está denormalizado en la entry (futuro). */
+  s3_category?: number | null
+}
+
+export interface Hotspot {
+  sectorCode: string
+  scopeCategory: ScopeCategory
+  level: MaterialityLevel
+  /** True si caemos en agregado S3 (la entry no tiene factor.s3_category). */
+  uncertain: boolean
+}
+
+/** Extrae la categoría S3 1-15 de una entry, devolviendo null si no se puede determinar. */
+function entryS3Cat(e: HotspotEntry): number | null {
+  if (e.s3_category != null) return e.s3_category
+  const ef = e.emission_factors
+  if (!ef) return null
+  if (Array.isArray(ef)) return ef[0]?.s3_category ?? null
+  return ef.s3_category ?? null
+}
+
+/**
+ * Detecta hotspots: cruces (sector × scope/categoría) con materialidad ≥ 2
+ * que no tienen tCO2e > 0 en el inventario actual.
+ *
+ * Para S3, evalúa la categoría 1-15 individualmente si la entry tiene
+ * `factor.s3_category`; si no, cae en agregado (uncertain=true) — significa
+ * que la entry tiene scope=s3 sin factor mapeado, no podemos garantizar
+ * que cubre la categoría del sector.
+ */
+export function detectHotspots(
+  orgSectors: string[],
+  entries: HotspotEntry[],
+  catalog: IndustryMateriality[],
+  overrides: OrgMaterialityOverride[]
+): Hotspot[] {
+  const hasS1 = entries.some((e) => e.scope === 's1' && (e.tco2e ?? 0) > 0)
+  const hasS2 = entries.some((e) => e.scope === 's2' && (e.tco2e ?? 0) > 0)
+
+  // Para S3, indexamos por categoría: hasS3Cat[X] = true si hay alguna entry
+  // s3 con tco2e>0 cuyo factor.s3_category === X.
+  const hasS3Cat = new Map<number, boolean>()
+  let hasS3Unmapped = false // entries s3 sin factor.s3_category
+  for (const e of entries) {
+    if (e.scope !== 's3') continue
+    if ((e.tco2e ?? 0) <= 0) continue
+    const cat = entryS3Cat(e)
+    if (cat != null) hasS3Cat.set(cat, true)
+    else hasS3Unmapped = true
+  }
+
+  const out: Hotspot[] = []
+  for (const sectorCode of orgSectors) {
+    for (const sc of SCOPE_CATEGORIES_ORDER) {
+      const r = resolveMateriality(sectorCode, sc, catalog, overrides)
+      if (r.level < 2) continue
+      let covered: boolean
+      let uncertain = false
+      if (sc === 's1') covered = hasS1
+      else if (sc === 's2') covered = hasS2
+      else {
+        // s3.catX
+        const match = sc.match(/^s3\.cat(\d+)$/)
+        const targetCat = match ? Number(match[1]) : null
+        if (targetCat == null) covered = false
+        else {
+          const directCovered = hasS3Cat.get(targetCat) === true
+          covered = directCovered
+          // Si no hay match directo PERO hay entries S3 sin mapping, marcamos
+          // uncertain (no podemos descartar que la cubran).
+          if (!directCovered && hasS3Unmapped) uncertain = true
+        }
+      }
+      if (!covered) {
+        out.push({ sectorCode, scopeCategory: sc, level: r.level, uncertain })
+      }
+    }
+  }
+  return out
+}
+
 /** Ordering canónico para mostrar en UI. */
 export const SCOPE_CATEGORIES_ORDER: ScopeCategory[] = [
   's1',
