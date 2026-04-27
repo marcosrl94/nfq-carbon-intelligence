@@ -14,6 +14,7 @@ import {
   Sprout,
   ShieldCheck,
   Compass,
+  HardDrive,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
@@ -36,6 +37,7 @@ const navigation: NavItem[] = [
   { name: 'Disclosures', href: '/disclosures', icon: FileText },
   { name: 'Configuración', href: '/settings', icon: Settings },
   { name: 'Audit log', href: '/admin/audit-log', icon: ShieldCheck, roles: ['admin'] },
+  { name: 'Storage', href: '/admin/storage', icon: HardDrive, roles: ['admin'] },
 ]
 
 export function Sidebar({ role }: { role?: UserRole }) {
