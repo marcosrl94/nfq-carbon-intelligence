@@ -8,6 +8,7 @@ import { Plus, Trash2, Search, Check, Paperclip, Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { AttachmentsDrawer } from './attachments-drawer'
 import { convertQuantity, listCompatibleInputUnits } from '@/lib/emissions/unit-conversion'
+import { deleteEmissionEntry } from '@/lib/emissions/actions'
 import type { DataQualityTier, EmissionEntry, EmissionFactor, EvidenceAttachment, GHGInventory, Scope, Scope2Method } from '@/types/database'
 
 type EntryWithAttachments = EmissionEntry & { evidence_attachments?: EvidenceAttachment[] | null }
@@ -262,7 +263,16 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
   }
 
   async function handleDelete(id: string) {
-    await supabase.from('emission_entries').delete().eq('id', id)
+    // Server action: borra blobs en Storage primero, luego la entry. La FK
+    // cascade limpia las filas de evidence_attachments. Sin esto los archivos
+    // físicos quedaban huérfanos en el bucket.
+    const result = await deleteEmissionEntry(id)
+    if (!result.ok) {
+      console.error('[deleteEmissionEntry]', result.error)
+      // Mostramos un alert sencillo; aún no tenemos un toaster global.
+      alert(`No se pudo borrar: ${result.error}`)
+      return
+    }
     router.refresh()
   }
 
