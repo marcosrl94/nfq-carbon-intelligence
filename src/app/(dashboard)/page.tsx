@@ -1,14 +1,146 @@
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { Header } from '@/components/ui/header'
 import { StatCard } from '@/components/ui/stat-card'
 import { Badge } from '@/components/ui/badge'
-import { Factory, Target, TrendingDown, FileCheck, AlertTriangle, CheckCircle } from 'lucide-react'
-import type { InventoryStatus } from '@/types/database'
+import { Factory, Target, TrendingDown, FileCheck, AlertTriangle, CheckCircle, Info, Zap, Sprout, Minus, Equal } from 'lucide-react'
+import type { DataQualityTier, InventoryStatus } from '@/types/database'
 
 const statusBadge: Record<InventoryStatus, { label: string; variant: 'success' | 'warning' | 'default' }> = {
   draft: { label: 'Borrador', variant: 'default' },
   submitted: { label: 'Enviado', variant: 'warning' },
   verified: { label: 'Verificado', variant: 'success' },
+}
+
+const tierLabels: Record<DataQualityTier, string> = {
+  1: 'T1 Primario · supplier',
+  2: 'T2 Primario · genérico',
+  3: 'T3 Estimado',
+}
+
+/** Colores de los segmentos del stacked bar (consistentes con el Badge). */
+const tierBarColor: Record<DataQualityTier, string> = {
+  1: 'bg-emerald-500',
+  2: 'bg-blue-500',
+  3: 'bg-amber-500',
+}
+
+interface TierEntry {
+  scope: string | null
+  tco2e: number | null
+  data_quality_tier: number | null
+}
+
+/** Devuelve [tco2e_t1, tco2e_t2, tco2e_t3] sumando entries (default tier = 3). */
+function tco2eByTier(entries: TierEntry[]): [number, number, number] {
+  const buckets: [number, number, number] = [0, 0, 0]
+  for (const e of entries) {
+    const t = (e.data_quality_tier ?? 3) as DataQualityTier
+    buckets[t - 1] += e.tco2e ?? 0
+  }
+  return buckets
+}
+
+/** Weighted average por tCO2e → % por tier. */
+function tierPct(entries: TierEntry[]): [number, number, number] {
+  const buckets = tco2eByTier(entries)
+  const sum = buckets[0] + buckets[1] + buckets[2]
+  if (sum <= 0) return [0, 0, 0]
+  return [
+    (buckets[0] / sum) * 100,
+    (buckets[1] / sum) * 100,
+    (buckets[2] / sum) * 100,
+  ]
+}
+
+interface BreakdownEntry {
+  category: string | null
+  subcategory: string | null
+  tco2e: number | null
+  scope: string | null
+}
+
+interface BreakdownRow {
+  key: string
+  category: string
+  scope: string | null
+  tco2e: number
+  pct: number
+}
+
+/** Top N categorías por tCO₂e (snapshot — sin JOIN). */
+function topActivitiesByTco2e(entries: BreakdownEntry[], n = 5): { rows: BreakdownRow[]; total: number; otherTco2e: number } {
+  const groups = new Map<string, { category: string; scope: string | null; tco2e: number }>()
+  for (const e of entries) {
+    if (!e.category) continue
+    const key = e.category
+    const cur = groups.get(key) ?? { category: e.category, scope: e.scope, tco2e: 0 }
+    cur.tco2e += e.tco2e ?? 0
+    groups.set(key, cur)
+  }
+  const all = Array.from(groups.entries())
+    .map(([key, v]) => ({ key, ...v }))
+    .filter((g) => g.tco2e > 0)
+    .sort((a, b) => b.tco2e - a.tco2e)
+  const total = all.reduce((s, g) => s + g.tco2e, 0)
+  const top = all.slice(0, n)
+  const otherTco2e = all.slice(n).reduce((s, g) => s + g.tco2e, 0)
+  const rows: BreakdownRow[] = top.map((g) => ({
+    key: g.key,
+    category: g.category,
+    scope: g.scope,
+    tco2e: g.tco2e,
+    pct: total > 0 ? (g.tco2e / total) * 100 : 0,
+  }))
+  return { rows, total, otherTco2e }
+}
+
+const scopeBarColor: Record<string, string> = {
+  s1: 'bg-red-500',
+  s2: 'bg-amber-500',
+  s3: 'bg-emerald-500',
+}
+
+function TierStackedBar({ entries, label }: { entries: TierEntry[]; label: string }) {
+  const pct = tierPct(entries)
+  const buckets = tco2eByTier(entries)
+  const total = buckets[0] + buckets[1] + buckets[2]
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-xs text-zinc-400">{label}</span>
+        <span className="text-[11px] text-zinc-500">
+          {total > 0 ? `${total.toLocaleString('es-ES', { maximumFractionDigits: 1 })} tCO₂e` : '—'}
+        </span>
+      </div>
+      {total > 0 ? (
+        <>
+          <div className="flex h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+            {([1, 2, 3] as DataQualityTier[]).map((t) => (
+              pct[t - 1] > 0 ? (
+                <div
+                  key={t}
+                  className={tierBarColor[t]}
+                  style={{ width: `${pct[t - 1]}%` }}
+                  title={`${tierLabels[t]}: ${pct[t - 1].toFixed(1)}% · ${buckets[t - 1].toLocaleString('es-ES', { maximumFractionDigits: 2 })} tCO₂e`}
+                />
+              ) : null
+            ))}
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500">
+            {([1, 2, 3] as DataQualityTier[]).map((t) => (
+              <span key={t} className="flex items-center gap-1">
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${tierBarColor[t]}`} />
+                T{t} {pct[t - 1].toFixed(0)}%
+              </span>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="h-2 w-full rounded-full bg-zinc-800/60" />
+      )}
+    </div>
+  )
 }
 
 export default async function DashboardPage() {
@@ -36,19 +168,67 @@ export default async function DashboardPage() {
     .select('*')
     .eq('organization_id', orgId ?? '')
 
+  // Fetch removals (tabla SEPARADA — no neteamos contra el total)
+  const { data: removals } = await supabase
+    .from('carbon_removals')
+    .select('inventory_year, volume_tco2e')
+    .eq('organization_id', orgId ?? '')
+
   // Calculate totals for latest inventory
   const latestInventory = inventories?.[0]
   const entries = latestInventory?.emission_entries ?? []
 
-  const totalEmissions = entries.reduce((sum: number, e: { tco2e: number | null }) => sum + (e.tco2e ?? 0), 0)
-  const s1Total = entries.filter((e: { scope: string }) => e.scope === 's1').reduce((sum: number, e: { tco2e: number | null }) => sum + (e.tco2e ?? 0), 0)
-  const s2Total = entries.filter((e: { scope: string }) => e.scope === 's2').reduce((sum: number, e: { tco2e: number | null }) => sum + (e.tco2e ?? 0), 0)
-  const s3Total = entries.filter((e: { scope: string }) => e.scope === 's3').reduce((sum: number, e: { tco2e: number | null }) => sum + (e.tco2e ?? 0), 0)
+  const sumTco2e = (es: { tco2e: number | null }[]) =>
+    es.reduce((sum, e) => sum + (e.tco2e ?? 0), 0)
 
-  // Previous year for trend
+  const s1Total = sumTco2e(entries.filter((e: { scope: string }) => e.scope === 's1'))
+  const s3Total = sumTco2e(entries.filter((e: { scope: string }) => e.scope === 's3'))
+
+  // GHG Protocol Scope 2 dual reporting:
+  // location-based usa la intensidad media de la red, market-based los
+  // contratos. Para evitar double-counting en el total, el headline usa
+  // location-based (default GHG Protocol). market-based se reporta aparte.
+  const s2Entries = entries.filter((e: { scope: string }) => e.scope === 's2')
+  const s2Location = sumTco2e(
+    s2Entries.filter((e: { scope2_method: string | null }) =>
+      e.scope2_method === 'location_based' || e.scope2_method == null
+    )
+  )
+  const s2Market = sumTco2e(
+    s2Entries.filter((e: { scope2_method: string | null }) => e.scope2_method === 'market_based')
+  )
+  const hasS2Market = s2Market > 0
+
+  const totalEmissions = s1Total + s2Location + s3Total
+  const totalEmissionsMarket = hasS2Market ? s1Total + s2Market + s3Total : null
+
+  // Breakdown por categoría (top 5) con la misma convención de S2 que el headline.
+  const breakdownEntries = entries.filter((e: { scope: string; scope2_method: string | null }) => {
+    if (e.scope === 's2') return e.scope2_method === 'location_based' || e.scope2_method == null
+    return true
+  }) as BreakdownEntry[]
+  const breakdown = topActivitiesByTco2e(breakdownEntries, 5)
+
+  // Removals/offsets — SEPARADO del total. Filtramos al año del inventario actual.
+  const latestYear = latestInventory?.fiscal_year
+  const removalsForYear = (removals ?? [])
+    .filter((r: { inventory_year: number }) => latestYear == null || r.inventory_year === latestYear)
+    .reduce((sum: number, r: { volume_tco2e: number }) => sum + (r.volume_tco2e ?? 0), 0)
+  const removalsAllYears = (removals ?? [])
+    .reduce((sum: number, r: { volume_tco2e: number }) => sum + (r.volume_tco2e ?? 0), 0)
+  const netEmissions = Math.max(0, totalEmissions - removalsForYear)
+
+  // Previous year for trend (mismo criterio location-based como headline)
   const prevInventory = inventories?.[1]
   const prevEntries = prevInventory?.emission_entries ?? []
-  const prevTotal = prevEntries.reduce((sum: number, e: { tco2e: number | null }) => sum + (e.tco2e ?? 0), 0)
+  const prevS2Loc = sumTco2e(
+    prevEntries.filter((e: { scope: string; scope2_method: string | null }) =>
+      e.scope === 's2' && (e.scope2_method === 'location_based' || e.scope2_method == null)
+    )
+  )
+  const prevS1 = sumTco2e(prevEntries.filter((e: { scope: string }) => e.scope === 's1'))
+  const prevS3 = sumTco2e(prevEntries.filter((e: { scope: string }) => e.scope === 's3'))
+  const prevTotal = prevS1 + prevS2Loc + prevS3
   const trendPct = prevTotal > 0 ? Math.round(((totalEmissions - prevTotal) / prevTotal) * 100) : 0
 
   const activeTargets = targets?.length ?? 0
@@ -75,13 +255,30 @@ export default async function DashboardPage() {
             icon={Factory}
             variant="danger"
           />
-          <StatCard
-            title="Alcance 2"
-            value={s2Total > 0 ? `${s2Total.toLocaleString('es-ES')}` : '—'}
-            subtitle="Electricidad comprada (tCO₂e)"
-            icon={TrendingDown}
-            variant="warning"
-          />
+          {/* Scope 2 dual reporting (location + market). */}
+          <div className="rounded-xl border bg-amber-950/30 border-amber-800/30 p-5">
+            <div className="flex items-start justify-between mb-3">
+              <p className="text-sm text-zinc-400">Alcance 2</p>
+              <div className="rounded-lg p-2.5 bg-amber-600/20 text-amber-400">
+                <Zap className="h-5 w-5" />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500">Location</p>
+                <p className="text-xl font-semibold text-white tabular-nums">
+                  {s2Location > 0 ? s2Location.toLocaleString('es-ES', { maximumFractionDigits: 1 }) : '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500">Market</p>
+                <p className="text-xl font-semibold text-white tabular-nums">
+                  {hasS2Market ? s2Market.toLocaleString('es-ES', { maximumFractionDigits: 1 }) : '—'}
+                </p>
+              </div>
+            </div>
+            <p className="mt-2 text-xs text-zinc-500">Electricidad (tCO₂e) — dual reporting</p>
+          </div>
           <StatCard
             title="Alcance 3"
             value={s3Total > 0 ? `${s3Total.toLocaleString('es-ES')}` : '—'}
@@ -89,6 +286,92 @@ export default async function DashboardPage() {
             icon={Target}
             variant="success"
           />
+        </div>
+
+        {/* Nota pedagógica GHG Protocol Scope 2 Guidance */}
+        <div className="flex items-start gap-3 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
+          <Info className="h-4 w-4 text-blue-400 mt-0.5 shrink-0" />
+          <div className="text-xs text-zinc-300 leading-relaxed">
+            <span className="font-semibold text-blue-300">GHG Protocol Scope 2 Guidance</span> exige reportar
+            electricidad bajo ambos métodos. <strong>Location-based</strong> ({s2Location > 0 ? `${s2Location.toLocaleString('es-ES', { maximumFractionDigits: 1 })} tCO₂e` : '—'})
+            usa el factor del mix de la red. <strong>Market-based</strong> ({hasS2Market ? `${s2Market.toLocaleString('es-ES', { maximumFractionDigits: 1 })} tCO₂e` : '—'})
+            usa los instrumentos contractuales (GoOs/RECs/PPAs) o el residual mix.
+            {!hasS2Market && (
+              <>
+                {' '}<span className="text-amber-300">Aún no hay entradas market-based.</span>{' '}
+                <Link href="/settings/renewable-energy" className="underline text-blue-300 hover:text-blue-200">
+                  Declara tus instrumentos
+                </Link>{' '}para empezar.
+              </>
+            )}
+            {totalEmissionsMarket != null && (
+              <>
+                {' '}Total inventario market-based: <strong>{totalEmissionsMarket.toLocaleString('es-ES', { maximumFractionDigits: 1 })} tCO₂e</strong>.
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Gross / Removals / Net — siempre las 3 líneas. NO mostrar solo Net. */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-950/50">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+            <div>
+              <h2 className="text-sm font-semibold text-white">Gross · Removals · Net</h2>
+              <p className="text-[11px] text-zinc-500 mt-0.5">
+                GHG Protocol & ESRS exigen mostrar las tres líneas separadas{latestYear ? ` · año ${latestYear}` : ''}
+              </p>
+            </div>
+            <Link
+              href="/removals"
+              className="text-[11px] text-emerald-400 hover:text-emerald-300 transition-colors inline-flex items-center gap-1"
+            >
+              Gestionar removals →
+            </Link>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-zinc-800">
+            <div className="p-5 flex items-start gap-3">
+              <div className="rounded-lg bg-zinc-700/40 p-2 shrink-0">
+                <Factory className="h-4 w-4 text-zinc-300" />
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500">Gross emissions</p>
+                <p className="text-2xl font-semibold text-white tabular-nums mt-0.5">
+                  {totalEmissions > 0 ? totalEmissions.toLocaleString('es-ES', { maximumFractionDigits: 1 }) : '—'}
+                </p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">tCO₂e (location-based)</p>
+              </div>
+            </div>
+            <div className="p-5 flex items-start gap-3">
+              <div className="rounded-lg bg-emerald-600/15 p-2 shrink-0">
+                <Sprout className="h-4 w-4 text-emerald-400" />
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500 flex items-center gap-1">
+                  <Minus className="h-2.5 w-2.5" /> Removals & offsets
+                </p>
+                <p className="text-2xl font-semibold text-emerald-400 tabular-nums mt-0.5">
+                  {removalsForYear > 0 ? removalsForYear.toLocaleString('es-ES', { maximumFractionDigits: 1 }) : '—'}
+                </p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">
+                  tCO₂e {removalsAllYears > removalsForYear && `· ${removalsAllYears.toLocaleString('es-ES', { maximumFractionDigits: 1 })} todos los años`}
+                </p>
+              </div>
+            </div>
+            <div className="p-5 flex items-start gap-3">
+              <div className="rounded-lg bg-blue-600/15 p-2 shrink-0">
+                <Equal className="h-4 w-4 text-blue-400" />
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500">Net emissions</p>
+                <p className="text-2xl font-semibold text-blue-300 tabular-nums mt-0.5">
+                  {(totalEmissions > 0 || removalsForYear > 0)
+                    ? netEmissions.toLocaleString('es-ES', { maximumFractionDigits: 1 })
+                    : '—'}
+                </p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">tCO₂e (informativo)</p>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -183,6 +466,81 @@ export default async function DashboardPage() {
                 ))
               )}
             </div>
+          </div>
+        </div>
+
+        {/* Calidad del dato (ESRS/CSRD) — weighted average por tCO2e */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-950/50">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+            <div>
+              <h2 className="text-sm font-semibold text-white">Calidad del dato</h2>
+              <p className="text-[11px] text-zinc-500 mt-0.5">
+                Mix de tiers ESRS por tCO₂e en {latestInventory ? `el inventario ${latestInventory.fiscal_year}` : 'el último inventario'}
+              </p>
+            </div>
+            <div className="hidden md:flex items-center gap-3 text-[10px] text-zinc-500">
+              {([1, 2, 3] as DataQualityTier[]).map((t) => (
+                <span key={t} className="flex items-center gap-1.5">
+                  <span className={`inline-block h-2 w-2 rounded-full ${tierBarColor[t]}`} />
+                  {tierLabels[t]}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+            <TierStackedBar entries={entries} label="Total inventario" />
+            <TierStackedBar entries={entries.filter((e: { scope: string }) => e.scope === 's1')} label="Alcance 1" />
+            <TierStackedBar entries={entries.filter((e: { scope: string }) => e.scope === 's2')} label="Alcance 2" />
+            <TierStackedBar entries={entries.filter((e: { scope: string }) => e.scope === 's3')} label="Alcance 3" />
+          </div>
+        </div>
+
+        {/* Dónde está el carbono — breakdown top N por categoría */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-950/50">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-800">
+            <div>
+              <h2 className="text-sm font-semibold text-white">Dónde está el carbono</h2>
+              <p className="text-[11px] text-zinc-500 mt-0.5">
+                Top 5 categorías del inventario {latestYear ?? 'actual'} (snapshot, sin JOIN)
+              </p>
+            </div>
+            <span className="text-[11px] text-zinc-500 tabular-nums">
+              {breakdown.total > 0 ? `${breakdown.total.toLocaleString('es-ES', { maximumFractionDigits: 1 })} tCO₂e total` : '—'}
+            </span>
+          </div>
+          <div className="p-6 space-y-3">
+            {breakdown.rows.length === 0 ? (
+              <p className="text-xs text-zinc-500 text-center py-4">Sin entradas con tCO₂e &gt; 0 en el último inventario.</p>
+            ) : (
+              <>
+                {breakdown.rows.map((row) => (
+                  <div key={row.key}>
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Badge variant={row.scope === 's1' ? 'danger' : row.scope === 's2' ? 'warning' : 'success'}>
+                          {String(row.scope ?? '').toUpperCase() || '—'}
+                        </Badge>
+                        <span className="text-xs text-zinc-300 truncate">{row.category}</span>
+                      </div>
+                      <span className="text-[11px] text-zinc-400 tabular-nums shrink-0 ml-2">
+                        {row.tco2e.toLocaleString('es-ES', { maximumFractionDigits: 1 })} tCO₂e · {row.pct.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-zinc-800">
+                      <div
+                        className={`h-full rounded-full ${scopeBarColor[row.scope ?? ''] ?? 'bg-zinc-500'}`}
+                        style={{ width: `${row.pct}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+                {breakdown.otherTco2e > 0 && (
+                  <p className="text-[11px] text-zinc-500 italic pt-1">
+                    + {breakdown.otherTco2e.toLocaleString('es-ES', { maximumFractionDigits: 1 })} tCO₂e en otras categorías ({((breakdown.otherTco2e / breakdown.total) * 100).toFixed(1)}%)
+                  </p>
+                )}
+              </>
+            )}
           </div>
         </div>
 

@@ -11,19 +11,32 @@ import {
   Settings,
   LogOut,
   Leaf,
+  Sprout,
+  ShieldCheck,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
+import type { UserRole } from '@/types/database'
 
-const navigation = [
+interface NavItem {
+  name: string
+  href: string
+  icon: typeof LayoutDashboard
+  /** Si está presente, sólo se muestra a usuarios con uno de estos roles. */
+  roles?: UserRole[]
+}
+
+const navigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Emisiones', href: '/emissions', icon: Factory },
+  { name: 'Removals', href: '/removals', icon: Sprout },
   { name: 'Objetivos', href: '/targets', icon: Target },
   { name: 'Disclosures', href: '/disclosures', icon: FileText },
   { name: 'Configuración', href: '/settings', icon: Settings },
+  { name: 'Audit log', href: '/admin/audit-log', icon: ShieldCheck, roles: ['admin'] },
 ]
 
-export function Sidebar() {
+export function Sidebar({ role }: { role?: UserRole }) {
   const pathname = usePathname()
   const router = useRouter()
   const supabase = createClient()
@@ -48,6 +61,7 @@ export function Sidebar() {
 
       <nav className="flex-1 px-3 py-4 space-y-1">
         {navigation.map((item) => {
+          if (item.roles && (!role || !item.roles.includes(role))) return null
           const isActive =
             item.href === '/'
               ? pathname === '/'

@@ -3,6 +3,27 @@ export type InventoryStatus = 'draft' | 'submitted' | 'verified'
 export type Scope = 's1' | 's2' | 's3'
 export type DisclosureFramework = 'TCFD' | 'ESRS' | 'AMBOS'
 export type EmissionFactorSource = 'MITECO' | 'IDAE' | 'DEFRA'
+/**
+ * ESRS/CSRD data quality tier por entrada.
+ *   1 = primary activity + supplier-specific EF
+ *   2 = primary activity + generic catalog EF (caso más común)
+ *   3 = spend-based / estimado
+ */
+export type DataQualityTier = 1 | 2 | 3
+/** GHG Protocol Scope 2 dual reporting (sólo aplica cuando scope='s2'). */
+export type Scope2Method = 'location_based' | 'market_based'
+/** Tipos de instrumentos contractuales soportados (renewable_instruments). */
+export type RenewableInstrumentType = 'GoO' | 'REC' | 'PPA' | 'green_tariff'
+/** Tipos de carbon removals/offsets soportados. Alineado con registries comunes. */
+export type CarbonRemovalType =
+  | 'REC'
+  | 'VCS'
+  | 'GoldStandard'
+  | 'PlanVivo'
+  | 'biochar'
+  | 'DAC'
+  | 'afforestation'
+  | 'other'
 
 export interface Organization {
   id: string
@@ -53,6 +74,87 @@ export interface EmissionEntry {
   tco2e: number | null
   /** FK opcional al catálogo de factores (20250424140000_emission_factors.sql). */
   factor_id: string | null
+  /** ESRS/CSRD data quality tier (20250425120000_data_quality_tier.sql). */
+  data_quality_tier: DataQualityTier
+  data_quality_notes: string | null
+  /**
+   * GHG Protocol Scope 2 dual reporting (20250425130000_scope2_method.sql).
+   * Sólo presente cuando scope='s2'; null en s1/s3 (constraint en DB).
+   */
+  scope2_method: Scope2Method | null
+  /**
+   * Trazabilidad de conversión (20250425160000_emission_entries_conversion_trace.sql).
+   *   quantity = quantity_input * conversion_factor
+   *
+   * En entradas sin conversión, conversion_factor=1 y los inputs reflejan
+   * la unidad nativa del factor.
+   */
+  quantity_input: number | null
+  quantity_input_unit: string | null
+  conversion_factor: number
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Justificante adjunto a una `EmissionEntry`.
+ *
+ * Migración: 20250425140000_evidence_attachments.sql
+ * Path Storage: `{organization_id}/{entry_id}/{filename}` (bucket privado `evidence`).
+ */
+export interface EvidenceAttachment {
+  id: string
+  entry_id: string
+  uploaded_by: string | null
+  filename: string
+  mime_type: string | null
+  file_size_bytes: number | null
+  storage_path: string
+  description: string | null
+  created_at: string
+}
+
+/**
+ * Removals / offsets / insets. Tabla SEPARADA de emisiones brutas.
+ *
+ * Migración: 20250425150000_carbon_removals.sql
+ * GHG Protocol y ESRS exigen no netear contra emisiones brutas; UI muestra
+ * siempre Gross / Removals / Net en líneas separadas.
+ */
+export interface CarbonRemoval {
+  id: string
+  organization_id: string
+  inventory_year: number
+  type: CarbonRemovalType
+  volume_tco2e: number
+  project_name: string | null
+  project_id: string | null
+  vintage_year: number | null
+  certificate_registry_url: string | null
+  cost_eur: number | null
+  retirement_date: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Instrumentos contractuales para Scope 2 market-based.
+ *
+ * Migración: 20250425130100_renewable_instruments.sql
+ */
+export interface RenewableInstrument {
+  id: string
+  organization_id: string
+  year: number
+  type: RenewableInstrumentType
+  volume_kwh: number
+  vintage_year: number | null
+  certificate_id: string | null
+  supplier: string | null
+  cost_eur: number | null
+  retirement_date: string | null
+  notes: string | null
   created_at: string
   updated_at: string
 }

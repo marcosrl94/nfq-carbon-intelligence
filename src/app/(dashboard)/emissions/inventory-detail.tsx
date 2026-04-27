@@ -1,11 +1,16 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import Papa from 'papaparse'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
-import { Plus, Trash2, Search, Check } from 'lucide-react'
+import { Plus, Trash2, Search, Check, Paperclip, Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import type { EmissionEntry, EmissionFactor, GHGInventory, Scope } from '@/types/database'
+import { AttachmentsDrawer } from './attachments-drawer'
+import { convertQuantity, listCompatibleInputUnits } from '@/lib/emissions/unit-conversion'
+import type { DataQualityTier, EmissionEntry, EmissionFactor, EvidenceAttachment, GHGInventory, Scope, Scope2Method } from '@/types/database'
+
+type EntryWithAttachments = EmissionEntry & { evidence_attachments?: EvidenceAttachment[] | null }
 
 const scopeLabels: Record<Scope, string> = {
   s1: 'Alcance 1 — Directas',
@@ -17,6 +22,36 @@ const scopeBadgeVariant: Record<Scope, 'danger' | 'warning' | 'success'> = {
   s1: 'danger',
   s2: 'warning',
   s3: 'success',
+}
+
+/** Etiqueta corta para mostrar junto al badge de tier. */
+const tierShortLabel: Record<DataQualityTier, string> = {
+  1: 'T1 · Primario supplier',
+  2: 'T2 · Primario genérico',
+  3: 'T3 · Estimado',
+}
+
+/** Texto largo que va al tooltip (atributo title) del badge. */
+const tierTooltip: Record<DataQualityTier, string> = {
+  1: 'Tier 1 — Actividad primaria + factor supplier-specific (la mejor calidad).',
+  2: 'Tier 2 — Actividad primaria + factor genérico del catálogo (caso más común).',
+  3: 'Tier 3 — Spend-based / estimado (la calidad mínima auditable).',
+}
+
+const tierBadgeVariant: Record<DataQualityTier, 'success' | 'info' | 'warning'> = {
+  1: 'success',
+  2: 'info',
+  3: 'warning',
+}
+
+const scope2MethodLabel: Record<Scope2Method, string> = {
+  location_based: 'Location-based',
+  market_based: 'Market-based',
+}
+
+const scope2MethodTooltip: Record<Scope2Method, string> = {
+  location_based: 'Factor del mix de la red eléctrica (MITECO/DEFRA grid). Refleja la intensidad media del territorio.',
+  market_based: 'Factor contractual (GoOs / RECs / PPAs / green tariff) o residual mix si no hay instrumento. GHG Protocol Scope 2 Guidance exige reportar AMBOS métodos.',
 }
 
 /** tCO2e = quantity * ef_value / 1000 (ef_value en kgCO2e / 1 ef_unit). */
@@ -34,22 +69,36 @@ function fmt(n: number | null, opts?: Intl.NumberFormatOptions): string {
 
 interface Props {
   inventory: GHGInventory
-  entries: EmissionEntry[]
+  entries: EntryWithAttachments[]
   /**
    * Catálogo de factores (MITECO/IDAE/DEFRA).
    * Pasado desde el server component; lo usa el picker de nueva entrada
    * para reemplazar el input manual de ef_value por "pick actividad + cantidad".
-   * Próximo paso: refactor del formulario (todavía usa ef_value a mano).
    */
   factors: EmissionFactor[]
 }
 
 export function InventoryDetail({ inventory, entries, factors }: Props) {
+  const [attachmentsForEntryId, setAttachmentsForEntryId] = useState<string | null>(null)
+  const attachmentsEntry = useMemo(
+    () => entries.find((e) => e.id === attachmentsForEntryId) ?? null,
+    [entries, attachmentsForEntryId]
+  )
   const [adding, setAdding] = useState(false)
   const [scope, setScope] = useState<Scope>('s1')
   const [search, setSearch] = useState('')
   const [selectedFactorId, setSelectedFactorId] = useState<string | null>(null)
   const [quantity, setQuantity] = useState('')
+  // Default = 2 porque hoy el único path es el picker del catálogo (factor genérico
+  // sobre actividad primaria). El analista puede subir a 1 si tiene un EF
+  // supplier-specific o bajar a 3 si en realidad es spend-based.
+  const [dataQualityTier, setDataQualityTier] = useState<DataQualityTier>(2)
+  const [dataQualityNotes, setDataQualityNotes] = useState('')
+  // Sólo se persiste cuando scope=s2 (constraint DB).
+  const [scope2Method, setScope2Method] = useState<Scope2Method>('location_based')
+  // Unidad en la que el usuario introduce la cantidad (puede diferir del
+  // ef_unit del factor si hay conversión disponible).
+  const [inputUnit, setInputUnit] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const router = useRouter()
   const supabase = createClient()
@@ -58,6 +107,18 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
     () => factors.find((f) => f.id === selectedFactorId) ?? null,
     [factors, selectedFactorId]
   )
+
+  // Reset de la unidad de entrada cuando cambia el factor.
+  useEffect(() => {
+    setInputUnit(selectedFactor?.ef_unit ?? null)
+  }, [selectedFactor?.id, selectedFactor?.ef_unit])
+
+  const compatibleUnits = useMemo(() => {
+    if (!selectedFactor) return [] as string[]
+    return listCompatibleInputUnits(selectedFactor.ef_unit, selectedFactor.activity_key)
+  }, [selectedFactor])
+
+  const effectiveInputUnit = inputUnit ?? selectedFactor?.ef_unit ?? ''
 
   const filteredFactors = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -84,7 +145,20 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
   }, [filteredFactors])
 
   const q = quantity ? Number(quantity) : null
-  const liveTco2e = selectedFactor ? computeTco2e(q, selectedFactor.ef_value) : null
+
+  /**
+   * Si la unidad de entrada difiere de ef_unit, aplica la conversión.
+   * Devuelve null cuando no hay diferencia o no hay valor numérico.
+   */
+  const conversion = useMemo(() => {
+    if (!selectedFactor || q == null || Number.isNaN(q)) return null
+    if (effectiveInputUnit === selectedFactor.ef_unit) return null
+    return convertQuantity(q, effectiveInputUnit, selectedFactor.ef_unit, selectedFactor.activity_key)
+  }, [selectedFactor, q, effectiveInputUnit])
+
+  /** Cantidad normalizada a la unidad del factor (ya sea convertida o nativa). */
+  const normalizedQuantity = conversion ? conversion.value : q
+  const liveTco2e = selectedFactor ? computeTco2e(normalizedQuantity, selectedFactor.ef_value) : null
 
   function resetForm() {
     setAdding(false)
@@ -92,12 +166,32 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
     setSearch('')
     setSelectedFactorId(null)
     setQuantity('')
+    setDataQualityTier(2)
+    setDataQualityNotes('')
+    setScope2Method('location_based')
+    setInputUnit(null)
   }
 
   async function handleAdd() {
     if (!selectedFactor || q == null || Number.isNaN(q)) return
+    if (conversion === null && effectiveInputUnit !== selectedFactor.ef_unit) {
+      // El usuario eligió una unidad incompatible para la que no tenemos conversión.
+      // En la UI esto no debería ocurrir (el dropdown sólo lista compatibles), pero
+      // protegemos por si acaso.
+      console.warn('[emissions] unidad incompatible sin conversión disponible')
+      return
+    }
     setLoading(true)
-    const tco2e = computeTco2e(q, selectedFactor.ef_value)
+
+    // Cantidad final en la unidad del factor (normalizada).
+    const finalQuantity = normalizedQuantity ?? q
+    const tco2e = computeTco2e(finalQuantity, selectedFactor.ef_value)
+
+    // Trazabilidad: ahora vive en columnas estructuradas. Las notas quedan
+    // libres para el analista; la traza de conversión se reconstruye desde
+    // (quantity_input, quantity_input_unit, conversion_factor).
+    const conversionFactor = conversion ? conversion.conversion.factor : 1
+
     // Snapshot del factor en la entrada: si el catálogo cambia luego, esta fila
     // conserva el valor usado. factor_id referencia la fila viva del catálogo.
     const payload = {
@@ -105,12 +199,20 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
       scope: selectedFactor.scope,
       category: selectedFactor.category,
       subcategory: selectedFactor.subcategory ?? null,
-      quantity: q,
+      quantity: finalQuantity,
       unit: selectedFactor.ef_unit,
+      // Trazabilidad de conversión (20250425160000)
+      quantity_input: q,
+      quantity_input_unit: effectiveInputUnit,
+      conversion_factor: conversionFactor,
       ef_value: selectedFactor.ef_value,
       ef_source: selectedFactor.source_version ?? selectedFactor.source,
       tco2e,
       factor_id: selectedFactor.id,
+      data_quality_tier: dataQualityTier,
+      data_quality_notes: dataQualityNotes.trim() || null,
+      // Constraint DB: scope='s2' ⇔ scope2_method not null.
+      scope2_method: selectedFactor.scope === 's2' ? scope2Method : null,
     }
     const { error } = await supabase.from('emission_entries').insert(payload)
     if (error) {
@@ -132,6 +234,71 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
     if (status === 'verified') updates.verified_at = new Date().toISOString()
     await supabase.from('ghg_inventories').update(updates).eq('id', inventory.id)
     router.refresh()
+  }
+
+  /**
+   * Export CSV con trazabilidad completa del inventario actual.
+   * JOIN con emission_factors para recuperar activity_key/year/region (no
+   * están denormalizados en la entry).
+   */
+  async function handleExportCsv() {
+    const { data, error } = await supabase
+      .from('emission_entries')
+      .select('*, emission_factors(activity_key, year, region, source_version)')
+      .eq('inventory_id', inventory.id)
+      .order('scope', { ascending: true })
+      .order('category', { ascending: true })
+    if (error) {
+      console.error('[emission_entries.export]', error)
+      return
+    }
+    type Row = EmissionEntry & {
+      emission_factors?: { activity_key: string | null; year: number | null; region: string | null; source_version: string | null } | null
+    }
+    const rows = (data ?? []) as Row[]
+    const csv = Papa.unparse({
+      fields: [
+        'inventory_year', 'scope', 'category', 'subcategory',
+        'activity_key', 'factor_year', 'factor_region',
+        'quantity_input', 'quantity_input_unit', 'conversion_factor',
+        'quantity', 'unit',
+        'ef_value', 'ef_unit', 'ef_source', 'source_version',
+        'tco2e',
+        'data_quality_tier', 'data_quality_notes',
+        'scope2_method',
+        'created_at',
+      ],
+      data: rows.map((r) => [
+        inventory.fiscal_year,
+        r.scope,
+        r.category ?? '',
+        r.subcategory ?? '',
+        r.emission_factors?.activity_key ?? '',
+        r.emission_factors?.year ?? '',
+        r.emission_factors?.region ?? '',
+        r.quantity_input ?? '',
+        r.quantity_input_unit ?? '',
+        r.conversion_factor ?? 1,
+        r.quantity ?? '',
+        r.unit ?? '',
+        r.ef_value ?? '',
+        r.unit ?? '',
+        r.ef_source ?? '',
+        r.emission_factors?.source_version ?? '',
+        r.tco2e ?? '',
+        r.data_quality_tier,
+        r.data_quality_notes ?? '',
+        r.scope2_method ?? '',
+        r.created_at,
+      ]),
+    })
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `inventario-${inventory.fiscal_year}-${inventory.id.slice(0, 8)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const grouped = (['s1', 's2', 's3'] as Scope[]).map(s => ({
@@ -164,25 +331,59 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
                       <th className="px-4 py-2 text-right text-xs font-medium text-zinc-500">Cantidad</th>
                       <th className="px-4 py-2 text-right text-xs font-medium text-zinc-500">Unidad</th>
                       <th className="px-4 py-2 text-right text-xs font-medium text-zinc-500">FE</th>
+                      <th className="px-4 py-2 text-center text-xs font-medium text-zinc-500">Calidad</th>
                       <th className="px-4 py-2 text-right text-xs font-medium text-zinc-500">tCO₂e</th>
+                      <th className="px-4 py-2 text-center text-xs font-medium text-zinc-500 w-12">
+                        <Paperclip className="h-3.5 w-3.5 inline-block" />
+                      </th>
                       <th className="px-4 py-2 w-10"></th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/30">
-                    {scopeEntries.map((entry) => (
-                      <tr key={entry.id} className="hover:bg-zinc-800/20">
-                        <td className="px-4 py-2 text-zinc-300">{entry.category ?? '—'}</td>
-                        <td className="px-4 py-2 text-right text-zinc-400">{entry.quantity?.toLocaleString('es-ES') ?? '—'}</td>
-                        <td className="px-4 py-2 text-right text-zinc-500">{entry.unit ?? '—'}</td>
-                        <td className="px-4 py-2 text-right text-zinc-500">{entry.ef_value ?? '—'}</td>
-                        <td className="px-4 py-2 text-right font-medium text-zinc-200">{entry.tco2e?.toLocaleString('es-ES') ?? '—'}</td>
-                        <td className="px-4 py-2">
-                          <button onClick={() => handleDelete(entry.id)} className="text-zinc-600 hover:text-red-400 transition-colors">
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {scopeEntries.map((entry) => {
+                      const tier = (entry.data_quality_tier ?? 3) as DataQualityTier
+                      const tierTitle = entry.data_quality_notes
+                        ? `${tierTooltip[tier]}\n\n${entry.data_quality_notes}`
+                        : tierTooltip[tier]
+                      return (
+                        <tr key={entry.id} className="hover:bg-zinc-800/20">
+                          <td className="px-4 py-2 text-zinc-300">{entry.category ?? '—'}</td>
+                          <td className="px-4 py-2 text-right text-zinc-400">{entry.quantity?.toLocaleString('es-ES') ?? '—'}</td>
+                          <td className="px-4 py-2 text-right text-zinc-500">{entry.unit ?? '—'}</td>
+                          <td className="px-4 py-2 text-right text-zinc-500">{entry.ef_value ?? '—'}</td>
+                          <td className="px-4 py-2 text-center">
+                            <span title={tierTitle} className="cursor-help">
+                              <Badge variant={tierBadgeVariant[tier]}>T{tier}</Badge>
+                            </span>
+                          </td>
+                          <td className="px-4 py-2 text-right font-medium text-zinc-200">{entry.tco2e?.toLocaleString('es-ES') ?? '—'}</td>
+                          <td className="px-4 py-2 text-center">
+                            {(() => {
+                              const count = entry.evidence_attachments?.length ?? 0
+                              return (
+                                <button
+                                  onClick={() => setAttachmentsForEntryId(entry.id)}
+                                  title={count > 0 ? `${count} justificante${count === 1 ? '' : 's'}` : 'Adjuntar justificante'}
+                                  className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] transition-colors ${
+                                    count > 0
+                                      ? 'text-emerald-400 hover:bg-emerald-500/10'
+                                      : 'text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800/40'
+                                  }`}
+                                >
+                                  <Paperclip className="h-3.5 w-3.5" />
+                                  {count > 0 && <span className="tabular-nums">{count}</span>}
+                                </button>
+                              )
+                            })()}
+                          </td>
+                          <td className="px-4 py-2">
+                            <button onClick={() => handleDelete(entry.id)} className="text-zinc-600 hover:text-red-400 transition-colors">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -199,6 +400,15 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
         >
           <Plus className="h-3.5 w-3.5" />
           Añadir entrada
+        </button>
+        <button
+          onClick={handleExportCsv}
+          disabled={entries.length === 0}
+          className="flex items-center gap-2 rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          title="Descargar CSV con trazabilidad completa (activity_key, factor year/region, snapshot, tier, scope2_method)"
+        >
+          <Download className="h-3.5 w-3.5" />
+          Exportar CSV
         </button>
         {inventory.status === 'draft' && (
           <button
@@ -217,6 +427,16 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
           </button>
         )}
       </div>
+
+      {/* Attachments drawer */}
+      {attachmentsEntry && (
+        <AttachmentsDrawer
+          entry={attachmentsEntry}
+          attachments={attachmentsEntry.evidence_attachments ?? []}
+          organizationId={inventory.organization_id}
+          onClose={() => setAttachmentsForEntryId(null)}
+        />
+      )}
 
       {/* Add entry modal */}
       {adding && (
@@ -249,6 +469,42 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
                 </button>
               ))}
             </div>
+
+            {/* Scope 2 dual reporting (GHG Protocol Scope 2 Guidance) */}
+            {scope === 's2' && (
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-medium text-blue-300">Método Scope 2</label>
+                  <span className="text-[10px] text-zinc-500">GHG Protocol Scope 2 Guidance</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {(['location_based', 'market_based'] as Scope2Method[]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setScope2Method(m)}
+                      title={scope2MethodTooltip[m]}
+                      className={`rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors ${
+                        scope2Method === m
+                          ? 'bg-blue-600 text-white'
+                          : 'border border-zinc-700 bg-zinc-800/30 text-zinc-400 hover:bg-zinc-800'
+                      }`}
+                    >
+                      {scope2MethodLabel[m]}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-zinc-400 leading-snug">
+                  {scope2MethodTooltip[scope2Method]}
+                </p>
+                {scope2Method === 'market_based' && (
+                  <p className="text-[10px] text-amber-300/90 leading-snug">
+                    Recuerda declarar tus instrumentos contractuales en{' '}
+                    <span className="underline">Configuración → Energía renovable</span>.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Buscador */}
             <div className="relative">
@@ -311,14 +567,14 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
               )}
             </div>
 
-            {/* Cantidad + preview de cálculo */}
+            {/* Cantidad + unidad + preview de cálculo */}
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
-              <div className="grid grid-cols-[1fr,auto] gap-3 items-end">
+              <div className="grid grid-cols-[1fr,auto,auto] gap-3 items-end">
                 <div>
                   <label className="block text-[11px] text-zinc-400 mb-1">
                     Cantidad
                     {selectedFactor && (
-                      <span className="text-zinc-500"> (en {selectedFactor.ef_unit})</span>
+                      <span className="text-zinc-500"> (en {effectiveInputUnit})</span>
                     )}
                   </label>
                   <input
@@ -332,6 +588,24 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
                     placeholder={selectedFactor ? '0' : 'Selecciona una actividad primero'}
                   />
                 </div>
+                {selectedFactor && compatibleUnits.length > 1 && (
+                  <div>
+                    <label className="block text-[11px] text-zinc-400 mb-1">Unidad</label>
+                    <select
+                      value={effectiveInputUnit}
+                      onChange={(e) => setInputUnit(e.target.value)}
+                      className="rounded-lg border border-zinc-700 bg-zinc-800/50 px-2.5 py-2 text-sm text-white focus:border-emerald-500 focus:outline-none"
+                      title="Si tu lectura está en otra unidad compatible, cámbiala aquí; convertimos automáticamente."
+                    >
+                      {compatibleUnits.map((u) => (
+                        <option key={u} value={u}>
+                          {u}
+                          {u === selectedFactor.ef_unit ? ' (factor)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
                 <div className="text-right">
                   <div className="text-[11px] text-zinc-400 mb-1">tCO₂e (calculado)</div>
                   <div className="font-mono text-lg font-semibold text-emerald-400 tabular-nums">
@@ -340,19 +614,70 @@ export function InventoryDetail({ inventory, entries, factors }: Props) {
                 </div>
               </div>
               {selectedFactor && q != null && !Number.isNaN(q) && (
-                <div className="text-[11px] text-zinc-500 font-mono leading-relaxed">
-                  {fmt(q)} {selectedFactor.ef_unit}
-                  {' × '}
-                  {fmt(selectedFactor.ef_value, { maximumFractionDigits: 5 })} kgCO₂e/{selectedFactor.ef_unit}
-                  {' ÷ 1000 = '}
-                  <span className="text-emerald-400">{fmt(liveTco2e)} tCO₂e</span>
-                  {' · '}
-                  <span className="text-zinc-400">
-                    Fuente: {selectedFactor.source_version ?? selectedFactor.source}
-                    {' · '}{selectedFactor.region}
-                  </span>
+                <div className="space-y-1">
+                  {conversion && normalizedQuantity != null && (
+                    <div className="text-[11px] text-blue-300 font-mono leading-relaxed">
+                      Conversión: {fmt(q)} {effectiveInputUnit}
+                      {' × '}{conversion.conversion.factor}
+                      {' = '}{fmt(normalizedQuantity)} {selectedFactor.ef_unit}
+                      {conversion.conversion.source && (
+                        <span className="text-zinc-500"> · {conversion.conversion.source}</span>
+                      )}
+                    </div>
+                  )}
+                  <div className="text-[11px] text-zinc-500 font-mono leading-relaxed">
+                    {fmt(normalizedQuantity)} {selectedFactor.ef_unit}
+                    {' × '}
+                    {fmt(selectedFactor.ef_value, { maximumFractionDigits: 5 })} kgCO₂e/{selectedFactor.ef_unit}
+                    {' ÷ 1000 = '}
+                    <span className="text-emerald-400">{fmt(liveTco2e)} tCO₂e</span>
+                    {' · '}
+                    <span className="text-zinc-400">
+                      Fuente: {selectedFactor.source_version ?? selectedFactor.source}
+                      {' · '}{selectedFactor.region}
+                    </span>
+                  </div>
                 </div>
               )}
+            </div>
+
+            {/* Calidad del dato (ESRS/CSRD) */}
+            <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3 space-y-3">
+              <div>
+                <label className="block text-[11px] text-zinc-400 mb-1.5">Calidad del dato</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([1, 2, 3] as DataQualityTier[]).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setDataQualityTier(t)}
+                      title={tierTooltip[t]}
+                      className={`rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors ${
+                        dataQualityTier === t
+                          ? 'bg-emerald-600 text-white'
+                          : 'border border-zinc-700 bg-zinc-800/30 text-zinc-400 hover:bg-zinc-800'
+                      }`}
+                    >
+                      {tierShortLabel[t]}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[10px] text-zinc-500 leading-snug">
+                  {tierTooltip[dataQualityTier]}
+                </p>
+              </div>
+              <div>
+                <label className="block text-[11px] text-zinc-400 mb-1">
+                  Notas del analista <span className="text-zinc-500">(opcional)</span>
+                </label>
+                <textarea
+                  value={dataQualityNotes}
+                  onChange={(e) => setDataQualityNotes(e.target.value)}
+                  rows={2}
+                  placeholder="Origen del dato, supuestos, fuente de la factura…"
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800/50 px-3 py-2 text-sm text-white placeholder-zinc-500 focus:border-emerald-500 focus:outline-none resize-none"
+                />
+              </div>
             </div>
 
             <div className="flex justify-end gap-3 pt-1">

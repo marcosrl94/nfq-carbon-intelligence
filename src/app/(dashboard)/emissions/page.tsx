@@ -1,8 +1,9 @@
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { Header } from '@/components/ui/header'
 import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/ui/empty-state'
-import { Factory } from 'lucide-react'
+import { Factory, Upload } from 'lucide-react'
 import { NewInventoryButton } from './new-inventory-button'
 import { InventoryDetail } from './inventory-detail'
 import { listEmissionFactors } from '@/lib/emissions/factors'
@@ -27,7 +28,7 @@ export default async function EmissionsPage() {
 
   const { data: inventories } = await supabase
     .from('ghg_inventories')
-    .select('*, emission_entries(*)')
+    .select('*, emission_entries(*, evidence_attachments(*))')
     .eq('organization_id', orgId ?? '')
     .order('fiscal_year', { ascending: false })
 
@@ -37,7 +38,16 @@ export default async function EmissionsPage() {
   return (
     <>
       <Header title="Emisiones GEI" description="Gestión de inventarios y entradas de emisiones" profile={profile}>
-        {orgId && <NewInventoryButton organizationId={orgId} />}
+        <div className="flex items-center gap-2">
+          <Link
+            href="/emissions/import"
+            className="flex items-center gap-2 rounded-lg border border-zinc-700 px-3.5 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-800 transition-colors"
+          >
+            <Upload className="h-4 w-4" />
+            Importar CSV
+          </Link>
+          {orgId && <NewInventoryButton organizationId={orgId} />}
+        </div>
       </Header>
 
       <div className="p-8">
