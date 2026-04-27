@@ -13,6 +13,7 @@ import {
   Leaf,
   Sprout,
   ShieldCheck,
+  Compass,
 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
@@ -30,6 +31,7 @@ const navigation: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Emisiones', href: '/emissions', icon: Factory },
   { name: 'Removals', href: '/removals', icon: Sprout },
+  { name: 'Materialidad', href: '/materiality', icon: Compass },
   { name: 'Objetivos', href: '/targets', icon: Target },
   { name: 'Disclosures', href: '/disclosures', icon: FileText },
   { name: 'Configuración', href: '/settings', icon: Settings },

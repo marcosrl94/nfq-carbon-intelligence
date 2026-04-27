@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { Header } from '@/components/ui/header'
 import { StatCard } from '@/components/ui/stat-card'
 import { Badge } from '@/components/ui/badge'
-import { Factory, Target, TrendingDown, FileCheck, AlertTriangle, CheckCircle, Info, Zap, Sprout, Minus, Equal } from 'lucide-react'
+import { Factory, Target, TrendingDown, FileCheck, AlertTriangle, CheckCircle, Info, Zap, Sprout, Minus, Equal, Calendar, Lock, Compass } from 'lucide-react'
 import type { DataQualityTier, InventoryStatus } from '@/types/database'
 
 const statusBadge: Record<InventoryStatus, { label: string; variant: 'success' | 'warning' | 'default' }> = {
@@ -174,6 +174,20 @@ export default async function DashboardPage() {
     .select('inventory_year, volume_tco2e')
     .eq('organization_id', orgId ?? '')
 
+  // Fetch organization (para base_year + threshold + sectors)
+  const { data: organization } = orgId
+    ? await supabase.from('organizations').select('id, name, base_year, recalc_threshold_pct, base_year_locked_at, sectors').eq('id', orgId).maybeSingle()
+    : { data: null }
+
+  // Fetch materialidad sólo si la org tiene sectores configurados
+  const orgSectorList: string[] = (organization?.sectors ?? []).filter((s: string) => typeof s === 'string')
+  const [{ data: matCatalog }, { data: matOverrides }] = orgSectorList.length > 0
+    ? await Promise.all([
+        supabase.from('industry_materiality').select('sector_code, scope_category, materiality, source_framework, notes').in('sector_code', [...orgSectorList, ...orgSectorList.map((s: string) => s.split('.')[0])]),
+        supabase.from('org_materiality_overrides').select('*').eq('organization_id', orgId ?? ''),
+      ])
+    : [{ data: null }, { data: null }]
+
   // Calculate totals for latest inventory
   const latestInventory = inventories?.[0]
   const entries = latestInventory?.emission_entries ?? []
@@ -208,6 +222,59 @@ export default async function DashboardPage() {
     return true
   }) as BreakdownEntry[]
   const breakdown = topActivitiesByTco2e(breakdownEntries, 5)
+
+  // Base year vs current — comparar contra el año designado (si existe).
+  // Usamos el mismo criterio location-based para la comparación.
+  const baseYearVal = organization?.base_year ?? null
+  const baseInventory = baseYearVal != null
+    ? inventories?.find((i: { fiscal_year: number }) => i.fiscal_year === baseYearVal)
+    : null
+  const baseEntries = baseInventory?.emission_entries ?? []
+  const baseS1 = sumTco2e(baseEntries.filter((e: { scope: string }) => e.scope === 's1'))
+  const baseS3 = sumTco2e(baseEntries.filter((e: { scope: string }) => e.scope === 's3'))
+  const baseS2Loc = sumTco2e(
+    baseEntries.filter((e: { scope: string; scope2_method: string | null }) =>
+      e.scope === 's2' && (e.scope2_method === 'location_based' || e.scope2_method == null)
+    )
+  )
+  const baseTotal = baseS1 + baseS2Loc + baseS3
+  const vsBasePct = baseTotal > 0 ? ((totalEmissions - baseTotal) / baseTotal) * 100 : null
+  const exceedsThreshold = vsBasePct != null && Math.abs(vsBasePct) >= Number(organization?.recalc_threshold_pct ?? 5)
+  const baseYearLocked = organization?.base_year_locked_at != null
+
+  // Hotspots de materialidad sin cubrir (count para banner; detalle vive en /materiality)
+  const matHotspotsCount = (() => {
+    if (!matCatalog || orgSectorList.length === 0) return 0
+    const hasS1 = entries.some((e: { scope: string; tco2e: number | null }) => e.scope === 's1' && (e.tco2e ?? 0) > 0)
+    const hasS2 = entries.some((e: { scope: string; tco2e: number | null }) => e.scope === 's2' && (e.tco2e ?? 0) > 0)
+    const hasS3 = entries.some((e: { scope: string; tco2e: number | null }) => e.scope === 's3' && (e.tco2e ?? 0) > 0)
+    const SCOPES_KEY = ['s1', 's2', 's3.cat1', 's3.cat3', 's3.cat4', 's3.cat5', 's3.cat6', 's3.cat7', 's3.cat11', 's3.cat15']
+    let count = 0
+    for (const sector of orgSectorList) {
+      for (const sc of SCOPES_KEY) {
+        // override?
+        const override = (matOverrides ?? []).find((o: { sector_code: string; scope_category: string }) => o.sector_code === sector && o.scope_category === sc)
+        let level = 0
+        if (override) {
+          level = (override as { materiality: number }).materiality
+        } else {
+          // exacta
+          const exact = matCatalog.find((m: { sector_code: string; scope_category: string }) => m.sector_code === sector && m.scope_category === sc)
+          if (exact) {
+            level = (exact as { materiality: number }).materiality
+          } else if (sector.includes('.')) {
+            // padre
+            const parent = matCatalog.find((m: { sector_code: string; scope_category: string }) => m.sector_code === sector.split('.')[0] && m.scope_category === sc)
+            if (parent) level = (parent as { materiality: number }).materiality
+          }
+        }
+        if (level < 2) continue
+        const has = sc === 's1' ? hasS1 : sc === 's2' ? hasS2 : hasS3
+        if (!has) count += 1
+      }
+    }
+    return count
+  })()
 
   // Removals/offsets — SEPARADO del total. Filtramos al año del inventario actual.
   const latestYear = latestInventory?.fiscal_year
@@ -372,6 +439,84 @@ export default async function DashboardPage() {
               </div>
             </div>
           </div>
+        </div>
+
+        {/* Materiality hotspots banner */}
+        {matHotspotsCount > 0 && (
+          <Link
+            href="/materiality"
+            className="flex items-center justify-between gap-4 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 hover:bg-amber-500/10 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <div className="rounded-lg bg-amber-600/20 p-2 shrink-0">
+                <Compass className="h-4 w-4 text-amber-300" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-white">
+                  {matHotspotsCount} hotspot{matHotspotsCount === 1 ? '' : 's'} de materialidad sin cubrir
+                </p>
+                <p className="text-[11px] text-zinc-400">
+                  Tu sector sugiere categorías material{matHotspotsCount === 1 ? '' : 'es'} sin entradas de tCO₂e en el inventario {latestInventory?.fiscal_year ?? 'actual'}.
+                </p>
+              </div>
+            </div>
+            <span className="text-[11px] text-amber-300">Revisar matriz →</span>
+          </Link>
+        )}
+
+        {/* vs Base Year — GHG Protocol §5 */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-950/50 p-5 flex items-center gap-4 flex-wrap">
+          <div className="rounded-lg bg-blue-600/15 p-2.5 shrink-0">
+            <Calendar className="h-5 w-5 text-blue-400" />
+          </div>
+          {baseYearVal != null && baseTotal > 0 ? (
+            <>
+              <div className="flex-1 min-w-[200px]">
+                <p className="text-[10px] uppercase tracking-wider text-zinc-500 flex items-center gap-1.5">
+                  vs Año base {baseYearVal}
+                  {baseYearLocked && <Lock className="h-3 w-3 text-blue-400" aria-label="locked" />}
+                </p>
+                <p className={`text-2xl font-semibold tabular-nums mt-0.5 ${
+                  vsBasePct != null && vsBasePct < 0 ? 'text-emerald-400' : vsBasePct != null && vsBasePct > 0 ? 'text-red-400' : 'text-zinc-300'
+                }`}>
+                  {vsBasePct != null ? `${vsBasePct > 0 ? '+' : ''}${vsBasePct.toFixed(1)}%` : '—'}
+                </p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">
+                  {baseTotal.toLocaleString('es-ES', { maximumFractionDigits: 1 })} → {totalEmissions.toLocaleString('es-ES', { maximumFractionDigits: 1 })} tCO₂e
+                </p>
+              </div>
+              {exceedsThreshold && vsBasePct != null && vsBasePct > 0 && (
+                <div className="text-[11px] text-amber-300 max-w-md flex items-start gap-2">
+                  <AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                  <span>
+                    El cambio supera tu threshold ({Number(organization?.recalc_threshold_pct ?? 5).toFixed(1)}%). Si es por
+                    cambio estructural, considera recalcular el año base.
+                  </span>
+                </div>
+              )}
+              <Link
+                href="/settings/base-year"
+                className="text-[11px] text-blue-400 hover:text-blue-300 transition-colors ml-auto"
+              >
+                Configurar →
+              </Link>
+            </>
+          ) : (
+            <>
+              <div className="flex-1 min-w-[200px]">
+                <p className="text-sm font-medium text-white">Año base sin configurar</p>
+                <p className="text-[11px] text-zinc-500 mt-0.5">
+                  GHG Protocol §5: fija un año de referencia para medir progreso de descarbonización.
+                </p>
+              </div>
+              <Link
+                href="/settings/base-year"
+                className="rounded-lg border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 transition-colors"
+              >
+                Designar año base
+              </Link>
+            </>
+          )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

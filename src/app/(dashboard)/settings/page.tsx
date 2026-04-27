@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { ChevronRight, Leaf } from 'lucide-react'
+import { ChevronRight, Leaf, Calendar } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { Header } from '@/components/ui/header'
 import { OrganizationForm } from './organization-form'
@@ -41,21 +41,44 @@ export default async function SettingsPage() {
         <OrganizationForm organization={organization} profile={profile} />
 
         {/* Sub-secciones */}
-        <Link
-          href="/settings/renewable-energy"
-          className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/50 px-6 py-4 hover:bg-zinc-900/40 transition-colors"
-        >
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600/15">
-              <Leaf className="h-4 w-4 text-emerald-400" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {profile?.role === 'admin' && (
+            <Link
+              href="/settings/base-year"
+              className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/50 px-5 py-4 hover:bg-zinc-900/40 transition-colors"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600/15 shrink-0">
+                  <Calendar className="h-4 w-4 text-blue-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-white">Año base GHG Protocol</p>
+                  <p className="text-xs text-zinc-500 truncate">
+                    {organization?.base_year
+                      ? `${organization.base_year} · threshold ${Number(organization.recalc_threshold_pct ?? 5).toFixed(1)}%`
+                      : 'Sin configurar'}
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="h-4 w-4 text-zinc-500 shrink-0" />
+            </Link>
+          )}
+          <Link
+            href="/settings/renewable-energy"
+            className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/50 px-5 py-4 hover:bg-zinc-900/40 transition-colors"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-600/15 shrink-0">
+                <Leaf className="h-4 w-4 text-emerald-400" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-white">Energía renovable</p>
+                <p className="text-xs text-zinc-500 truncate">Instrumentos contractuales (GoO/REC/PPA) para Scope 2 market-based</p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-semibold text-white">Energía renovable</p>
-              <p className="text-xs text-zinc-500">Instrumentos contractuales (GoO/REC/PPA) para Scope 2 market-based</p>
-            </div>
-          </div>
-          <ChevronRight className="h-4 w-4 text-zinc-500" />
-        </Link>
+            <ChevronRight className="h-4 w-4 text-zinc-500 shrink-0" />
+          </Link>
+        </div>
 
         {/* Team members */}
         {members && members.length > 0 && (

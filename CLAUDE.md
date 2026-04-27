@@ -74,7 +74,7 @@ npm run db:drop-auth-trigger  # aplica en Postgres el DROP del trigger (requiere
 
 ## 3. Estado actual y próximos pasos
 
-**Versión:** `0.1.0` (v1.1 "defendible ante auditor" en curso)
+**Versión:** `0.1.0` (v1.1 desplegada en prod, v1.2 base year + materiality en curso local)
 **Última referencia de commit / estado:** comprobar con `git log -1` y `git status` (puede haber cambios locales sin publicar).
 **Historial corto (4 commits):** `Initial commit → feat: MVP inicial → update → update`.
 
@@ -94,9 +94,9 @@ npm run db:drop-auth-trigger  # aplica en Postgres el DROP del trigger (requiere
 - Integración Resend (dependencia lista; flujo invitación pendiente)
 - Deploy configurado en Vercel
 
-### Hecho ✅ — v1.1 (defendible ante auditor)
+### Hecho ✅ — v1.1 (defendible ante auditor) — **aplicada en remoto + desplegada en prod (commit 6ab177a)**
 
-> Las migraciones `20250425*` están **escritas pero pendientes de aplicar en Supabase remoto**. El código UI ya las espera; sin migración aplicada los inserts caen.
+> Migraciones aplicadas en Supabase project `wvxhreyogkmfthmioird` el 27 abr 2026 vía MCP. Incluye un shim `20250425110000_repo_compat` que reconcilia el schema vivo (que usaba `current_org_id`/`current_user_role`/`audit_log`) con el del repo (`app_user_org`/`app_user_role`/`audit_log_entries`). El shim también arregló un cross-tenant leak preexistente en RLS.
 
 - **Tanda 1 — Data quality tiering (ESRS/CSRD)**
   - Migración `20250425120000_data_quality_tier.sql` añade `data_quality_tier smallint not null default 3 check (in 1,2,3)` y `data_quality_notes text` en `emission_entries` + índice `(inventory_id, data_quality_tier)`.
@@ -154,37 +154,80 @@ npm run db:drop-auth-trigger  # aplica en Postgres el DROP del trigger (requiere
 - **Cleanup migraciones legacy**
   - Borrados `20250424140000_emission_factors.sql` y `20250424141000_seed_emission_factors.sql` (schema legacy `DEFRA_2024_SIMPLIFIED` que NO está vivo en remoto). El esquema canónico es `20250424150000_emission_factors.sql` + `20250424150100_emission_factors_seed.sql`.
 
-### Pendiente 🚧 — v1.1 (cierre)
+### Hecho ✅ — v1.2 (base year + materiality) — **aplicada en remoto, pendiente de deploy**
 
-- **Aplicar las migraciones `20250425*` en Supabase remoto** (CLI `supabase db push` o pegado en SQL Editor). **Orden importa.** Sin esto los inserts UI fallan.
-  - `20250425120000_data_quality_tier.sql`
-  - `20250425130000_scope2_method.sql`
-  - `20250425130100_renewable_instruments.sql`
-  - `20250425130200_emission_factors_market_residual.sql`
-  - `20250425140000_evidence_attachments.sql`
-  - `20250425150000_carbon_removals.sql`
-  - `20250425160000_emission_entries_conversion_trace.sql`
-  - `20250425170000_rls_role_matrix.sql`
-- **Configurar variables de entorno para invitaciones por email** en `.env.local`:
-  - `RESEND_API_KEY` — ya en plantilla.
-  - `NEXT_PUBLIC_APP_URL` — debe coincidir con el dominio de producción (Vercel) o `http://localhost:3000` en dev. Sin esto los enlaces del email caen rotos.
-  - Si quieres usar dominio propio en `from`, cambia `FROM_EMAIL` en `src/lib/invitations/actions.ts` (hoy `onboarding@resend.dev`, requiere verificar dominio en Resend).
-- **Probar el flujo de invitaciones end-to-end** una vez aplicadas las migraciones (RLS de invitations ahora admin-only; el accept usa service role, así que necesita `SUPABASE_SERVICE_ROLE_KEY`).
+- **Tanda A — Base year designation (GHG Protocol §5)**
+  - Migración `20250425180000_base_year.sql`: añade `organizations.base_year`, `base_year_locked_at`, `recalc_threshold_pct numeric default 5`. Tabla inmutable `base_year_metadata` con `superseded_at` para historial.
+  - Tipos: `Organization` extendido + `BaseYearMetadata`.
+  - Página `/settings/base-year` (admin-only) con `BaseYearForm`: picker entre fiscal_years de inventories, slider de threshold (0–20%, default 5), lock/unlock, historial inmutable.
+  - Dashboard: bloque "vs Año base YYYY: ±X%" con verde si reducción / rojo si subida. Aviso amber si delta > threshold ("considera recalcular"). CTA si no hay base year configurado.
+  - Link tarjeta en `/settings` (admin-only).
+- **Tanda B — Recálculo + audit trail (GHG Protocol §5.4)**
+  - Migración `20250425190000_base_year_recalculations.sql`: tabla con `structural_change_type` (acquisition/divestment/methodology_change/ef_update/error_correction/other), `pre_recalc_snapshot jsonb`, `post_recalc_snapshot jsonb`, `delta_pct`, `threshold_pct_at_time`, `exceeds_threshold` (generated stored), `applied`/`applied_at`/`applied_by`/`applied_notes`. RLS admin-only para escritura.
+  - Server actions `src/lib/base-year/actions.ts`: `proposeRecalculation` (computa snapshot actual del base year, busca último applied como pre, calcula delta) y `applyRecalculation` (marca applied=true). `computeSnapshot` privada (no export en archivo `'use server'`).
+  - Componente `RecalculationsSection` con form de propuesta (tipo + razón), lista paginada con badges (pending/applied), expandible con diff por scope (S1/S2 location/S2 market/S3/Total), botón Apply con confirm.
+- **Tanda C — Materiality reference data (NACE Rev 2.1 + EFRAG/SASB)**
+  - Migración `20250425200000_industry_materiality.sql`: tabla `nace_sectors` (sección/división con padre), `industry_materiality` (sector × scope_category × framework, niveles 0–3, regex check `^s[123](\.cat([1-9]|1[0-5]))?$`), `org_materiality_overrides` (org-scoped con justificación). RLS catalog read-all, overrides admin-only + audit.
+  - Seed `20250425200100_industry_materiality_seed.sql`: 21 secciones NACE + 31 divisiones representativas (52 total). 232 filas de materialidad: 210 a nivel sección (todas las 21 con 10 categorías clave) + 22 overrides a nivel división donde difiere (refino, cemento, química, food, retail, banca, seguros, inmobiliarias, datacenters, sanidad, transporte aéreo).
+  - Tipos: `MaterialityLevel`, `ScopeCategory`, `MaterialityFramework`, `NaceSector`, `IndustryMateriality`, `OrgMaterialityOverride`.
+- **Tanda D — Materiality profiler UI**
+  - Helper `src/lib/materiality/resolve.ts`: `resolveMateriality()` con orden override > exact > parent inheritance > 0. Constantes `SCOPE_CATEGORIES_ORDER` y `SCOPE_CATEGORY_LABELS` (10 categorías clave, etiquetas humanas).
+  - Página `/materiality` (server) carga sectores/catálogo/overrides/entries del último inventario.
+  - Cliente `MaterialityManager` con: editor de sectores NACE de la org (multiselect con buscador), bloque amber "Hotspots sin cubrir" (categorías material ≥2 sin entradas — S1/S2 detectables, S3 evaluadas en agregado), matriz visual heatmap (filas categorías, columnas sectores, colores por nivel), modal override per-celda con justificación obligatoria, ring emerald cuando hay override + botón ↺ para resetear.
+  - Sidebar: nueva entrada "Materialidad" con icon `Compass`.
+  - Dashboard: banner amber con count de hotspots y CTA a `/materiality` (sólo si org tiene sectores y count > 0).
 
-### Pendiente 🚧 — post v1.1
+### Pendiente 🚧 — v1.2 (cierre, deploy a prod)
 
-- **Integración DEFRA API** (auto-refresh anual del catálogo desde la fuente). Necesita API key DEFRA + diseño de cache local.
+- **Commit + push v1.2 a `main`** y monitor del deploy de Vercel. Las migraciones ya están aplicadas en Supabase remoto vía MCP.
+- **Smoke tests en prod** post-deploy: `/settings/base-year` (designar 2024 como base year, lock, override, historial), `/materiality` (seleccionar sector, ver matriz, crear override y revocarlo), banner del dashboard cuando hay hotspots.
+
+### Pendiente 🚧 — backlog histórico aún sin tocar
+
+- **DEFRA API integration** (auto-refresh anual del catálogo desde la fuente). Necesita API key DEFRA + diseño de cache local.
 - **Resiliencia e2e** — Playwright/CI/backups/monitoring. Scope semanas; queda como tanda dedicada.
-- **Limpieza de blobs huérfanos** en Storage al borrar entries (trigger + edge function o purga UI).
-- **Mapa de equivalencias scope2_method ↔ factor_market_residual** — hoy el modal no fuerza al analista a elegir `electricity_grid_*_market_residual` cuando marca market-based. Próximo refinement.
-- **Materialización del breakdown** si el dataset crece: el cálculo es O(N) en cada render del dashboard.
+- **Limpieza de blobs huérfanos** en Storage al borrar entries.
+- **Mapa de equivalencias scope2_method ↔ factor_market_residual** — el modal no fuerza al analista a elegir `electricity_grid_*_market_residual` cuando marca market-based.
+- **Materializar el breakdown** del dashboard si el dataset crece.
+- **Mapping S3 → categoría 1–15** — hoy el catálogo usa `category` text libre; para hotspot detection granular en `/materiality` haría falta mapear cada `activity_key` a `s3.cat1`/`cat3`/etc. v1.3.
 
-### Fuera de v1.1 (no tocar en esta fase)
+### Migraciones aplicadas en `wvxhreyogkmfthmioird` (orden cronológico)
+
+```
+20260424122930  20250424150000_emission_factors        (v1.0 catálogo)
+20260424123018  20250424150100_emission_factors_seed   (37 factores)
+20260424153441  20250424160000_emission_entries_factor_fk
+20260427093907  20250425110000_repo_compat             (shim — wrappers + rename audit_log)
+20260427093930  20250425120000_data_quality_tier
+20260427093954  20250425130000_scope2_method
+20260427094012  20250425130100_renewable_instruments
+20260427094029  20250425130200_emission_factors_market_residual
+20260427094051  20250425140000_evidence_attachments
+20260427094107  20250425150000_carbon_removals
+20260427094119  20250425160000_emission_entries_conversion_trace
+20260427094207  20250425170000_rls_role_matrix
+[v1.2]          20250425180000_base_year
+[v1.2]          20250425190000_base_year_recalculations
+[v1.2]          20250425200000_industry_materiality
+[v1.2]          20250425200100_industry_materiality_seed
+```
+
+### Migraciones legacy (REMOVED del repo, no se aplicaron en remoto)
+
+- `20250424140000_emission_factors.sql` y `20250424141000_seed_emission_factors.sql` definían un schema alternativo (sin `activity_key`, source libre, seed `DEFRA_2024_SIMPLIFIED`). Borrados durante v1.1. No tocar el remoto: el schema canónico es `20250424150000_emission_factors.sql`.
+
+### Variables de entorno (Vercel + .env.local)
+
+- `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`: Supabase.
+- `NEXT_PUBLIC_APP_URL`: dominio para los emails de invitación. En prod debe ser `https://nfq-carbon-intelligence.vercel.app`; en dev `http://localhost:3000`.
+- `RESEND_API_KEY`: para `sendInvitationEmail` (Resend free permite enviar sólo a tu email hasta verificar dominio).
+- `DEMO_USER_EMAIL` / `DEMO_USER_PASSWORD`: cuenta demo del botón de login.
+- `SUPABASE_DB_PASSWORD`: sólo para el script local `db:drop-auth-trigger` (no necesaria en Vercel).
+
+### Fuera de v1.2 (siguientes versiones)
 
 - **PCAF / financed emissions (cat 15)** → v1.3 o v2.
-- **Base year + política de recálculo** → v1.2.
-- **Materiality profiler por industria** → v1.2.
-- **Scope 3 cat 11 (use of sold products)** → v2.
+- **Scope 3 cat 11 (use of sold products) granular** → v2.
 - **Consolidación multi-entity real** → v2.
 - **XBRL tagging** → v2.
 - **Integraciones ERP** → después.
